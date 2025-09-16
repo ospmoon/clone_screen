@@ -1,0 +1,16 @@
+[versions]
+agp = "8.13.0"
+appcompat = "1.7.1"
+material = "1.13.0"
+activity = "1.8.0"
+media3Session = "1.8.0"
+
+[libraries]
+appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+activity = { group = "androidx.activity", name = "activity", version.ref = "activity" }
+media3-session = { module = "androidx.media3:media3-session", version.ref = "media3Session" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+
