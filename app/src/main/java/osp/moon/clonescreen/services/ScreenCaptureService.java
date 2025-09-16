@@ -27,252 +27,322 @@ import androidx.core.app.NotificationCompat;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import osp.moon.clonescreen.R;
 
 public class ScreenCaptureService extends Service {
 
     private static final String TAG = ScreenCaptureService.class.getName();
-    private static final int SERVICE_ID = 123;
 
+    private static final int SERVICE_ID = 123;
     public static final String ACTION_PREPARE = "osp.moon.clonescreen.PREPARE";
     public static final String ACTION_START = "osp.moon.clonescreen.START";
     public static final String ACTION_STOP = "osp.moon.clonescreen.STOP";
 
     public static MediaProjection mediaProjection;
 
-    private static final String MIME_TYPE = MediaFormat.MIMETYPE_VIDEO_AVC; // H.264
-    private int screenWidth;
-    private int screenHeight;
-    private int screenDpi;
-    private static final int BIT_RATE = 6000000;
-    private static final int FRAME_RATE = 30;
-    private static final int I_FRAME_INTERVAL = 2;
+    private static final String MIME_TYPE = MediaFormat.MIMETYPE_VIDEO_AVC;
+    private int screenWidth, screenHeight, screenDpi;
+    private static final int BIT_RATE = 6000000, FRAME_RATE = 30, I_FRAME_INTERVAL = 2;
 
     private MediaCodec videoEncoder;
     private VirtualDisplay virtualDisplay;
     private Surface inputSurface;
     private Thread workerThread;
     private TcpServer tcpServer;
+    private Thread resolutionChangeDetector;
 
-    // ... (методы onCreate, onStartCommand, startCapture без изменений)
+    // --- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: ОБЪЕКТ ДЛЯ БЛОКИРОВКИ ---
+    private final Object encoderLock = new Object();
+
+    private final AtomicBoolean isRunning = new AtomicBoolean(false);
 
     @Override
     public void onCreate() {
         super.onCreate();
-        Log.d(TAG, "Сервис создан");
+        Log.d(TAG, "onCreate: Сервис создан.");
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null || intent.getAction() == null) {
+            Log.w(TAG, "onStartCommand: Получен пустой intent или action.");
             return START_NOT_STICKY;
         }
-
         String action = intent.getAction();
-        Log.d(TAG, "Получена команда: " + action);
-
+        Log.d(TAG, "onStartCommand: Получена команда: " + action);
         switch (action) {
             case ACTION_PREPARE:
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    Notification notification = getNotification(getApplicationContext(), "Подготовка к трансляции...");
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        startForeground(SERVICE_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
-                    } else {
-                        startForeground(SERVICE_ID, notification);
-                    }
-                } else {
-                    startForeground(SERVICE_ID, new Notification());
-                }
-
-                Log.d(TAG, "Сервис переведен в режим Foreground (PREPARE).");
+                Log.d(TAG, "onStartCommand: Обработка ACTION_PREPARE.");
+                startForegroundService();
                 break;
-
             case ACTION_START:
-                if (mediaProjection != null && workerThread == null) {
-                    Log.d(TAG, "Получена команда START, начинаем захват.");
+                if (mediaProjection != null && !isRunning.get()) {
+                    Log.d(TAG, "onStartCommand: Обработка ACTION_START.");
                     startCapture();
                 } else {
-                    Log.e(TAG, "Команда START получена, но mediaProjection == null или workerThread уже работает!");
+                    Log.e(TAG, "onStartCommand: ACTION_START получен, но mediaProjection=null или сервис уже запущен!");
                 }
                 break;
-
             case ACTION_STOP:
-                Log.d(TAG, "Получена команда на остановку.");
-                stopSelf();
+                Log.d(TAG, "onStartCommand: Обработка ACTION_STOP.");
+                stopCapture();
                 break;
         }
-
         return START_NOT_STICKY;
     }
 
-    private void startCapture() {
-        Log.d(TAG, "MediaProjection получен. Начинаем настройку...");
-
-        if (mediaProjection != null) {
-            mediaProjection.registerCallback(new MediaProjection.Callback() {
-                @Override
-                public void onStop() {
-                    super.onStop();
-                    Log.w(TAG, "MediaProjection остановлен извне (пользователем или системой). Останавливаем сервис.");
-                    stopSelf();
-                }
-            }, null);
+    private void startForegroundService() {
+        Log.d(TAG, "startForegroundService: Переводим сервис в режим Foreground.");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification notification = getNotification(this, "Подготовка к трансляции...");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(SERVICE_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+            } else {
+                startForeground(SERVICE_ID, notification);
+            }
+        } else {
+            startForeground(SERVICE_ID, new Notification());
         }
+    }
 
+    private void startCapture() {
+        Log.d(TAG, "startCapture: Устанавливаем isRunning=true и запускаем workerThread.");
+        isRunning.set(true);
         workerThread = new Thread(() -> {
+            Log.d(TAG, "workerThread: Поток запущен.");
             try {
+                mediaProjection.registerCallback(new MediaProjection.Callback() {
+                    @Override
+                    public void onStop() {
+                        Log.e(TAG, "!!! MediaProjection.onStop() был вызван системой! Это приведет к остановке. !!!");
+                        if(isRunning.get()){
+                            stopCapture();
+                        }
+                    }
+                }, null);
+
+                Log.d(TAG, "workerThread: Создаем и запускаем TcpServer.");
                 tcpServer = new TcpServer();
                 tcpServer.start();
 
-                // Ждем, пока клиент подключится к TCP серверу
+                Log.d(TAG, "workerThread: Ожидаем подключения клиента...");
                 tcpServer.waitForClient();
+                Log.d(TAG, "workerThread: Клиент подключился!");
 
-                // Только после подключения клиента готовим кодировщик и отправляем разрешение
-                prepareVideoEncoder();
+                reconfigureEncoder();
 
-                virtualDisplay = mediaProjection.createVirtualDisplay("ScreenCapture",
-                        screenWidth, screenHeight, screenDpi,
-                        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                        inputSurface, null, null);
-
-                Log.i(TAG, "Настройка завершена. Начинаем захват и кодирование...");
+                Log.i(TAG, "workerThread: Настройка завершена. Запускаем drainEncoder.");
                 drainEncoder();
 
-            } catch (IOException e) {
-                Log.e(TAG, "Ошибка при настройке кодировщика", e);
-            } catch (InterruptedException e) {
-                Log.d(TAG, "Поток был прерван во время ожидания клиента.");
-                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                if (isRunning.get()) Log.e(TAG, "workerThread: Критическая ошибка в потоке.", e);
             } finally {
-                Log.d(TAG, "Worker-поток завершает работу, освобождаем ресурсы.");
-                releaseResources();
+                Log.d(TAG, "workerThread: Поток завершает работу, освобождаем все ресурсы.");
+                releaseAllResources();
             }
         });
         workerThread.start();
     }
 
-
-    // ================== НАЧАЛО ИЗМЕНЕНИЙ ==================
-    private void prepareVideoEncoder() throws IOException {
-        WindowManager windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
-        DisplayMetrics metrics = new DisplayMetrics();
-        windowManager.getDefaultDisplay().getRealMetrics(metrics);
-        screenWidth = metrics.widthPixels;
-        screenHeight = metrics.heightPixels;
-        screenDpi = metrics.densityDpi;
-
-        // --- ИЗМЕНЕНИЕ 1: Отправляем разрешение клиенту СРАЗУ ПОСЛЕ ПОДКЛЮЧЕНИЯ ---
-        if (tcpServer != null) {
-            tcpServer.sendResolution(screenWidth, screenHeight);
+    private void stopCapture() {
+        Log.d(TAG, "stopCapture: Начало полной остановки сервиса.");
+        if (!isRunning.getAndSet(false)) {
+            Log.d(TAG, "stopCapture: Сервис уже был в процессе остановки.");
+            return;
         }
-        // -------------------------------------------------------------------------
+        stopSelf();
+    }
 
-        MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, screenWidth, screenHeight);
-        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-        format.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE);
-        format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
-        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL);
+    private void reconfigureEncoder() throws IOException {
+        // --- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: БЛОКИРУЕМ ДОСТУП ---
+        synchronized (encoderLock) {
+            Log.i(TAG, "reconfigureEncoder: НАЧАЛО ПЕРЕНАСТРОЙКИ КОДЕКА (ЗАБЛОКИРОВАНО).");
+            if (!isRunning.get()) {
+                Log.e(TAG, "reconfigureEncoder: Перенастройка отменена, сервис не запущен.");
+                return;
+            }
 
-        Log.d(TAG, "Формат видео: " + format);
-        videoEncoder = MediaCodec.createEncoderByType(MIME_TYPE);
-        videoEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-        inputSurface = videoEncoder.createInputSurface();
-        videoEncoder.start();
-        Log.d(TAG, "Кодировщик настроен и запущен.");
+            Log.d(TAG, "reconfigureEncoder: 1. Получаем новые размеры экрана.");
+            WindowManager windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+            DisplayMetrics metrics = new DisplayMetrics();
+            windowManager.getDefaultDisplay().getRealMetrics(metrics);
+            screenWidth = metrics.widthPixels;
+            screenHeight = metrics.heightPixels;
+            screenDpi = metrics.densityDpi;
+            Log.i(TAG, "reconfigureEncoder: Новые размеры: " + screenWidth + "x" + screenHeight);
+
+            Log.d(TAG, "reconfigureEncoder: 2. Освобождаем ТОЛЬКО старый кодек и его Surface.");
+            if (videoEncoder != null) {
+                try { videoEncoder.stop(); } catch (Exception e) { Log.w(TAG, "reconfigureEncoder: Ошибка при videoEncoder.stop() (не критично)"); }
+                videoEncoder.release();
+                Log.d(TAG, "reconfigureEncoder: Старый videoEncoder освобожден.");
+            }
+            if (inputSurface != null) {
+                inputSurface.release();
+                Log.d(TAG, "reconfigureEncoder: Старый inputSurface освобожден.");
+            }
+
+            Log.d(TAG, "reconfigureEncoder: 3. Отправляем клиенту новое разрешение.");
+            if (tcpServer != null && tcpServer.isClientConnected()) {
+                Log.i(TAG, "reconfigureEncoder: ОТПРАВКА ПАКЕТА ТИП 2 с разрешением " + screenWidth + "x" + screenHeight);
+                tcpServer.sendResolution(screenWidth, screenHeight);
+            } else {
+                Log.w(TAG, "reconfigureEncoder: Не удалось отправить разрешение, клиент не подключен.");
+            }
+
+            Log.d(TAG, "reconfigureEncoder: 4. Создаем и настраиваем НОВЫЙ кодек.");
+            MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, screenWidth, screenHeight);
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+            format.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE);
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL);
+            videoEncoder = MediaCodec.createEncoderByType(MIME_TYPE);
+            videoEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            inputSurface = videoEncoder.createInputSurface();
+            videoEncoder.start();
+            Log.d(TAG, "reconfigureEncoder: Новый кодек настроен и запущен.");
+
+            Log.d(TAG, "reconfigureEncoder: 5. Настраиваем VirtualDisplay.");
+            if (virtualDisplay == null) {
+                Log.d(TAG, "reconfigureEncoder: Создаем новый VirtualDisplay.");
+                virtualDisplay = mediaProjection.createVirtualDisplay("ScreenCapture", screenWidth, screenHeight, screenDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, inputSurface, null, null);
+            } else {
+                Log.d(TAG, "reconfigureEncoder: Перенаправляем существующий VirtualDisplay на новый Surface и меняем размер.");
+                virtualDisplay.setSurface(inputSurface);
+                virtualDisplay.resize(screenWidth, screenHeight, screenDpi);
+            }
+            Log.i(TAG, "reconfigureEncoder: ЗАВЕРШЕНИЕ ПЕРЕНАСТРОЙКИ (РАЗБЛОКИРОВАНО).");
+        }
     }
 
     private void drainEncoder() {
-        MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
-        Log.d(TAG, "drainEncoder: Начинаем цикл извлечения данных из кодировщика...");
+        Log.d(TAG, "drainEncoder: Запускаем resolutionChangeDetector.");
+        resolutionChangeDetector = new Thread(() -> {
+            Log.d(TAG, "resolutionChangeDetector: Поток запущен.");
+            while (isRunning.get() && !Thread.currentThread().isInterrupted()) {
+                try {
+                    Thread.sleep(1000);
+                    WindowManager windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+                    if (windowManager == null) continue;
 
-        while (!Thread.interrupted()) {
-            try {
-                int outputBufferIndex = videoEncoder.dequeueOutputBuffer(bufferInfo, 10000);
+                    DisplayMetrics metrics = new DisplayMetrics();
+                    windowManager.getDefaultDisplay().getRealMetrics(metrics);
 
-                if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    MediaFormat newFormat = videoEncoder.getOutputFormat();
-                    Log.i(TAG, "drainEncoder: ФОРМАТ КОДИРОВЩИКА ИЗМЕНИЛСЯ: " + newFormat.toString());
-
-                    ByteBuffer sps = newFormat.getByteBuffer("csd-0");
-                    ByteBuffer pps = newFormat.getByteBuffer("csd-1");
-
-                    if (tcpServer != null && sps != null && pps != null) {
-                        byte[] spsData = new byte[sps.remaining()];
-                        sps.get(spsData);
-                        byte[] ppsData = new byte[pps.remaining()];
-                        pps.get(ppsData);
-                        Log.i(TAG, "drainEncoder: Найдены SPS и PPS. Отправляем...");
-
-                        // --- ИЗМЕНЕНИЕ 2: Используем новый метод sendData с флагом isConfig ---
-                        tcpServer.sendData(spsData, true); // true, так как это конфиг
-                        tcpServer.sendData(ppsData, true); // true, так как это конфиг
+                    if (metrics.widthPixels != screenWidth || metrics.heightPixels != screenHeight) {
+                        Log.i(TAG, "!!! resolutionChangeDetector: ОБНАРУЖЕНО ИЗМЕНЕНИЕ РАЗРЕШЕНИЯ! Старое: " + screenWidth + "x" + screenHeight + ", Новое: " + metrics.widthPixels + "x" + metrics.heightPixels + " !!!");
+                        reconfigureEncoder();
                     }
-                } else if (outputBufferIndex >= 0) {
-                    ByteBuffer outputBuffer = videoEncoder.getOutputBuffer(outputBufferIndex);
-                    if (outputBuffer != null && bufferInfo.size > 0) {
-                        byte[] data = new byte[bufferInfo.size];
-                        outputBuffer.get(data);
-                        if (tcpServer != null) {
-                            // --- ИЗМЕНЕНИЕ 3: Используем новый метод sendData ---
-                            tcpServer.sendData(data, false); // false, так как это видеокадр
-                        }
-                    }
-                    videoEncoder.releaseOutputBuffer(outputBufferIndex, false);
+                } catch (InterruptedException e) {
+                    Log.d(TAG, "resolutionChangeDetector: Поток прерван.");
+                    break;
+                } catch (Exception e) {
+                    if (isRunning.get()) Log.e(TAG, "resolutionChangeDetector: Ошибка в потоке.", e);
                 }
-            } catch (Exception e) {
-                Log.e(TAG, "drainEncoder: Ошибка в цикле кодирования", e);
-                break;
+            }
+            Log.d(TAG, "resolutionChangeDetector: Поток остановлен.");
+        });
+        resolutionChangeDetector.start();
+
+        Log.d(TAG, "drainEncoder: Начало цикла извлечения данных.");
+        MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+        while (isRunning.get() && !Thread.currentThread().isInterrupted()) {
+            // --- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: БЛОКИРУЕМ ДОСТУП ---
+            synchronized (encoderLock) {
+                if (videoEncoder == null) {
+                    // Кодек может быть null в момент перенастройки, просто ждем
+                    continue;
+                }
+                try {
+                    int outputBufferIndex = videoEncoder.dequeueOutputBuffer(bufferInfo, 10000);
+
+                    if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        Log.i(TAG, "drainEncoder: Формат кодировщика изменился. Отправляем SPS/PPS.");
+                        MediaFormat newFormat = videoEncoder.getOutputFormat();
+                        ByteBuffer sps = newFormat.getByteBuffer("csd-0");
+                        ByteBuffer pps = newFormat.getByteBuffer("csd-1");
+                        if (tcpServer != null && sps != null && pps != null) {
+                            byte[] spsData = new byte[sps.remaining()];
+                            sps.get(spsData);
+                            byte[] ppsData = new byte[pps.remaining()];
+                            pps.get(ppsData);
+                            tcpServer.sendData(spsData, true);
+                            tcpServer.sendData(ppsData, true);
+                        }
+                    } else if (outputBufferIndex >= 0) {
+                        ByteBuffer outputBuffer = videoEncoder.getOutputBuffer(outputBufferIndex);
+                        if (outputBuffer != null && bufferInfo.size > 0 && tcpServer != null) {
+                            byte[] data = new byte[bufferInfo.size];
+                            outputBuffer.get(data);
+                            tcpServer.sendData(data, false);
+                        }
+                        videoEncoder.releaseOutputBuffer(outputBufferIndex, false);
+                    }
+                } catch (Exception e) {
+                    // Это исключение теперь не должно приводить к краху всего сервиса
+                    Log.e(TAG, "drainEncoder: Ошибка в цикле (возможно, кодек был остановлен).", e);
+                }
             }
         }
-        Log.w(TAG, "drainEncoder: Цикл кодирования завершен.");
-    }
-    // =================== КОНЕЦ ИЗМЕНЕНИЙ ===================
-
-
-    // ... (методы releaseResources, onDestroy, getNotification, onBind без изменений)
-
-    private void releaseResources() {
-        Log.d(TAG, "Освобождение ресурсов...");
-        if (workerThread != null) {
-            workerThread.interrupt();
-            workerThread = null;
-        }
-        if (tcpServer != null) {
-            tcpServer.stopServer();
-            tcpServer = null;
-        }
-        if (virtualDisplay != null) {
-            virtualDisplay.release();
-            virtualDisplay = null;
-        }
-        if (videoEncoder != null) {
-            try {
-                videoEncoder.stop();
-                videoEncoder.release();
-            } catch (Exception e) { Log.e(TAG, "Error stopping video encoder", e); }
-            videoEncoder = null;
-        }
-        if (inputSurface != null) {
-            inputSurface.release();
-            inputSurface = null;
-        }
-        if (mediaProjection != null) {
-            try {
-                mediaProjection.stop();
-            } catch(Exception e) {/*ignore*/}
-            mediaProjection = null;
-        }
+        Log.d(TAG, "drainEncoder: Цикл извлечения данных завершен.");
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-        releaseResources();
-        Log.d(TAG, "Сервис уничтожен");
+        Log.d(TAG, "onDestroy: Сервис уничтожается, освобождаем ВСЕ ресурсы.");
+        releaseAllResources();
     }
 
+    private void releaseAllResources() {
+        Log.d(TAG, "releaseAllResources: Начало освобождения ВСЕХ ресурсов.");
+
+        if (resolutionChangeDetector != null) {
+            Log.d(TAG, "releaseAllResources: Прерываем resolutionChangeDetector.");
+            resolutionChangeDetector.interrupt();
+            resolutionChangeDetector = null;
+        }
+        if (workerThread != null) {
+            Log.d(TAG, "releaseAllResources: Прерываем workerThread.");
+            workerThread.interrupt();
+            workerThread = null;
+        }
+        if (tcpServer != null) {
+            Log.d(TAG, "releaseAllResources: Останавливаем TcpServer.");
+            tcpServer.stopServer();
+            tcpServer = null;
+        }
+
+        synchronized (encoderLock) {
+            Log.d(TAG, "releaseAllResources: Входим в synchronized блок.");
+            if (virtualDisplay != null) {
+                Log.d(TAG, "releaseAllResources: Освобождаем VirtualDisplay.");
+                virtualDisplay.release();
+                virtualDisplay = null;
+            }
+            if (videoEncoder != null) {
+                Log.d(TAG, "releaseAllResources: Освобождаем MediaCodec.");
+                try { videoEncoder.stop(); videoEncoder.release(); } catch (Exception e) { /* ignore */ }
+                videoEncoder = null;
+            }
+            if (inputSurface != null) {
+                Log.d(TAG, "releaseAllResources: Освобождаем Surface.");
+                inputSurface.release();
+                inputSurface = null;
+            }
+            if (mediaProjection != null) {
+                Log.d(TAG, "releaseAllResources: Отписываемся и останавливаем MediaProjection.");
+                try { mediaProjection.unregisterCallback(new MediaProjection.Callback() {}); } catch(Exception e) {/*ignore*/}
+                try { mediaProjection.stop(); } catch(Exception e) {/*ignore*/}
+                mediaProjection = null;
+            }
+            Log.d(TAG, "releaseAllResources: Выходим из synchronized блока.");
+        }
+        Log.i(TAG, "releaseAllResources: Все ресурсы освобождены.");
+    }
+
+    // getNotification без изменений...
     @RequiresApi(Build.VERSION_CODES.O)
     public static Notification getNotification(final Context context, String contentText) {
         String NOTIFICATION_CHANNEL_ID = "osp.moon.clonescreen";
@@ -294,9 +364,6 @@ public class ScreenCaptureService extends Service {
                 .build();
     }
 
-    @Nullable
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null;
-    }
+    @Nullable @Override public IBinder onBind(Intent intent) { return null; }
 }
+

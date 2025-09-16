@@ -17,141 +17,182 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.Socket;
 import java.nio.ByteBuffer;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class ClientActivity extends AppCompatActivity implements SurfaceHolder.Callback {
 
     private static final String TAG = ClientActivity.class.getName();
+
     private static final String MIME_TYPE = MediaFormat.MIMETYPE_VIDEO_AVC;
     private static final int PORT = 12345;
 
-    private AutoFitSurfaceView surfaceView; // ИЗМЕНЕНИЕ
+    private AutoFitSurfaceView surfaceView;
     private Surface surface;
     private MediaCodec videoDecoder;
     private Thread networkThread;
     private EditText ipInput;
     private LinearLayout controlsContainer;
-    private String masterIpAddress = "192.168.43.1"; // Типичный IP точки доступа
-    private boolean isConnectionRequested = false;
+    private String masterIpAddress = "192.168.1.136";
 
-    // Поля для динамического разрешения
-    private int videoWidth = 0;
-    private int videoHeight = 0;
+    private final AtomicBoolean shouldBeConnecting = new AtomicBoolean(false);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_client);
+        Log.d(TAG, "onCreate: Активити создано.");
 
         ipInput = findViewById(R.id.ip_address_input);
         controlsContainer = findViewById(R.id.controls_container);
         Button connectButton = findViewById(R.id.connect_button);
-        surfaceView = findViewById(R.id.client_surface_view); // ИЗМЕНЕНИЕ
+        surfaceView = findViewById(R.id.client_surface_view);
 
         ipInput.setText(masterIpAddress);
         surfaceView.getHolder().addCallback(this);
 
         connectButton.setOnClickListener(v -> {
+            Log.d(TAG, "onClick: Нажата кнопка 'Подключиться'.");
             masterIpAddress = ipInput.getText().toString();
             if (masterIpAddress.isEmpty()) {
                 Toast.makeText(this, "Введите IP-адрес", Toast.LENGTH_SHORT).show();
                 return;
             }
-            isConnectionRequested = true;
+            shouldBeConnecting.set(true);
             controlsContainer.setVisibility(View.GONE);
-            Toast.makeText(this, "Подключение...", Toast.LENGTH_SHORT).show();
             startClient();
         });
     }
 
     @Override
     public void surfaceCreated(@NonNull SurfaceHolder holder) {
-        Log.d(TAG, "Surface создан.");
+        Log.d(TAG, "surfaceCreated: Surface создан и готов.");
         surface = holder.getSurface();
-        if (isConnectionRequested) {
+        if (shouldBeConnecting.get()) {
+            Log.d(TAG, "surfaceCreated: Запускаем клиент, так как подключение уже было запрошено.");
             startClient();
         }
     }
 
     @Override
     public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
-        Log.d(TAG, "Surface уничтожен.");
+        Log.d(TAG, "surfaceDestroyed: Surface уничтожен. Останавливаем клиент.");
         stopClient();
     }
 
     @Override
-    public void surfaceChanged(@NonNull SurfaceHolder holder, int format, int width, int height) {}
+    public void surfaceChanged(@NonNull SurfaceHolder holder, int format, int width, int height) {
+        Log.d(TAG, "surfaceChanged: format=" + format + ", width=" + width + ", height=" + height);
+    }
 
     private void startClient() {
-        if (surface == null || !surface.isValid() || (networkThread != null && networkThread.isAlive())) {
+        Log.d(TAG, "startClient: Проверка условий для запуска.");
+        if (surface == null || !surface.isValid()) {
+            Log.w(TAG, "startClient: Surface не готов, запуск отложен.");
             return;
         }
+        if (networkThread != null && networkThread.isAlive()) {
+            Log.w(TAG, "startClient: Сетевой поток уже запущен, новый не создаем.");
+            return;
+        }
+        Log.d(TAG, "startClient: Все условия выполнены, запускаем сетевой поток.");
 
         networkThread = new Thread(() -> {
-            try (Socket socket = new Socket(masterIpAddress, PORT);
-                 InputStream inputStream = socket.getInputStream()) {
-                Log.d(TAG, "Подключено к серверу: " + masterIpAddress);
-                runOnUiThread(() -> Toast.makeText(ClientActivity.this, "Подключено!", Toast.LENGTH_SHORT).show());
+            Log.d(TAG, "networkThread: Поток запущен. Входим в цикл переподключения.");
+            while (shouldBeConnecting.get() && !Thread.currentThread().isInterrupted()) {
+                try (Socket socket = new Socket(masterIpAddress, PORT)) {
+                    Log.i(TAG, "networkThread: УСПЕШНО ПОДКЛЮЧЕНО к " + masterIpAddress);
+                    runOnUiThread(() -> Toast.makeText(ClientActivity.this, "Подключено!", Toast.LENGTH_SHORT).show());
 
-                while (!Thread.currentThread().isInterrupted()) {
-                    int packetType = inputStream.read(); // Читаем тип пакета (1 байт)
-                    if (packetType == -1) break;
+                    try (InputStream inputStream = socket.getInputStream()) {
+                        Log.d(TAG, "networkThread: Начинаем цикл чтения данных из сокета.");
+                        // Настраиваем декодер один раз с "заглушкой", реальный размер придет из потока.
+                        setupDecoder(1, 1);
 
-                    if (packetType == 2) { // Тип 2: Пакет с разрешением
-                        byte[] widthBytes = readNBytes(inputStream, 4);
-                        byte[] heightBytes = readNBytes(inputStream, 4);
-                        videoWidth = ByteBuffer.wrap(widthBytes).asIntBuffer().get();
-                        videoHeight = ByteBuffer.wrap(heightBytes).asIntBuffer().get();
-                        Log.i(TAG, "Получено разрешение от сервера: " + videoWidth + "x" + videoHeight);
-                        runOnUiThread(() -> surfaceView.setAspectRatio(videoWidth, videoHeight));
-                        // Настраиваем декодер с этим разрешением
-                        setupDecoder();
-                    } else if (packetType == 0 || packetType == 1) { // Тип 0 (конфиг) или 1 (кадр)
-                        if (videoDecoder == null) continue; // Ждем настройки декодера
+                        while (shouldBeConnecting.get() && !Thread.currentThread().isInterrupted()) {
+                            int packetType = inputStream.read();
+                            if (packetType == -1) {
+                                throw new IOException("Сервер корректно закрыл соединение (read returned -1)");
+                            }
 
-                        byte[] sizeBuffer = readNBytes(inputStream, 4);
-                        int packetSize = ByteBuffer.wrap(sizeBuffer).asIntBuffer().get();
-                        if (packetSize <= 0 || packetSize > 1_000_000) throw new IOException("Неверный размер пакета: " + packetSize);
+                            if (packetType == 2) {
+                                Log.i(TAG, "!!! networkThread: ПОЛУЧЕН ПАКЕТ ТИП 2 (Разрешение) !!!");
+                                byte[] widthBytes = readNBytes(inputStream, 4);
+                                byte[] heightBytes = readNBytes(inputStream, 4);
+                                int receivedWidth = ByteBuffer.wrap(widthBytes).asIntBuffer().get();
+                                int receivedHeight = ByteBuffer.wrap(heightBytes).asIntBuffer().get();
+                                Log.i(TAG, "networkThread: Новое разрешение от сервера: " + receivedWidth + "x" + receivedHeight);
 
-                        byte[] packetBuffer = readNBytes(inputStream, packetSize);
-                        feedDecoder(packetBuffer, packetType == 0); // true если конфиг
+                                // Перенастраиваем декодер с новым разрешением
+                                setupDecoder(receivedWidth, receivedHeight);
+
+                            } else if (packetType == 0 || packetType == 1) {
+                                if (videoDecoder == null) {
+                                    Log.w(TAG, "networkThread: Получен пакет с видео, но декодер еще не готов. Пропускаем.");
+                                    continue;
+                                }
+                                byte[] sizeBuffer = readNBytes(inputStream, 4);
+                                int packetSize = ByteBuffer.wrap(sizeBuffer).asIntBuffer().get();
+
+                                if (packetSize <= 0 || packetSize > 2_000_000) throw new IOException("Неверный размер пакета: " + packetSize);
+
+                                byte[] packetBuffer = readNBytes(inputStream, packetSize);
+                                feedDecoder(packetBuffer, packetType == 0);
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    if (shouldBeConnecting.get()) {
+                        Log.e(TAG, "networkThread: Ошибка в цикле подключения: " + e.getMessage());
+                        Log.w(TAG, "networkThread: Пауза 2 секунды перед переподключением...");
+                        runOnUiThread(() -> Toast.makeText(ClientActivity.this, "Переподключение...", Toast.LENGTH_SHORT).show());
+                        try { Thread.sleep(2000); } catch (InterruptedException interruptedException) {
+                            Log.w(TAG, "networkThread: Поток прерван во время паузы.");
+                            Thread.currentThread().interrupt();
+                        }
                     }
                 }
-            } catch (Exception e) {
-                Log.e(TAG, "Ошибка сети или подключения", e);
-                runOnUiThread(() -> {
-                    Toast.makeText(ClientActivity.this, "Ошибка: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                    controlsContainer.setVisibility(View.VISIBLE);
-                });
-            } finally {
-                Log.d(TAG, "Сетевой поток завершен.");
-                isConnectionRequested = false;
             }
+            Log.d(TAG, "networkThread: Вышли из основного цикла. Поток завершается.");
+            runOnUiThread(() -> {
+                Log.d(TAG, "UI Thread: Показываем панель управления.");
+                controlsContainer.setVisibility(View.VISIBLE);
+            });
         });
         networkThread.start();
     }
 
-    // Вспомогательный метод для надежного чтения
     private byte[] readNBytes(InputStream in, int n) throws IOException {
         byte[] buffer = new byte[n];
         int totalRead = 0;
         while(totalRead < n) {
             int bytesRead = in.read(buffer, totalRead, n - totalRead);
-            if (bytesRead == -1) throw new IOException("Соединение закрыто");
+            if (bytesRead == -1) throw new IOException("Соединение закрыто во время чтения " + n + " байт.");
             totalRead += bytesRead;
         }
         return buffer;
     }
 
-    private void setupDecoder() throws IOException {
-        if (videoDecoder != null) videoDecoder.release(); // Освобождаем старый, если есть
-        MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, videoWidth, videoHeight);
-        videoDecoder = MediaCodec.createDecoderByType(MIME_TYPE);
-        videoDecoder.configure(format, surface, null, 0);
-        videoDecoder.start();
-        Log.d(TAG, "Декодер настроен с разрешением " + videoWidth + "x" + videoHeight);
+    private void setupDecoder(int width, int height) {
+        Log.d(TAG, "setupDecoder: Начало настройки/перенастройки декодера.");
+        try {
+            if (videoDecoder != null) {
+                Log.d(TAG, "setupDecoder: Освобождаем старый декодер.");
+                videoDecoder.stop();
+                videoDecoder.release();
+            }
+            Log.i(TAG, "setupDecoder: Настройка с разрешением: " + width + "x" + height);
+            MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, width, height);
+            videoDecoder = MediaCodec.createDecoderByType(MIME_TYPE);
+            videoDecoder.configure(format, surface, null, 0);
+            videoDecoder.start();
+            Log.i(TAG, "setupDecoder: Декодер успешно настроен и запущен.");
+        } catch (Exception e) {
+            Log.e(TAG, "setupDecoder: КРИТИЧЕСКАЯ ОШИБКА при настройке декодера.", e);
+        }
     }
 
     private void feedDecoder(byte[] data, boolean isConfig) {
+        if (videoDecoder == null) return;
         try {
             int inputBufferIndex = videoDecoder.dequeueInputBuffer(10000);
             if (inputBufferIndex >= 0) {
@@ -161,39 +202,58 @@ public class ClientActivity extends AppCompatActivity implements SurfaceHolder.C
                 int flags = isConfig ? MediaCodec.BUFFER_FLAG_CODEC_CONFIG : 0;
                 videoDecoder.queueInputBuffer(inputBufferIndex, 0, data.length, System.nanoTime() / 1000, flags);
             }
+
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
             int outputBufferIndex = videoDecoder.dequeueOutputBuffer(bufferInfo, 0);
-            if (outputBufferIndex >= 0) {
+
+            while (outputBufferIndex >= 0) {
                 videoDecoder.releaseOutputBuffer(outputBufferIndex, true);
-            } else if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                Log.i(TAG, "Формат декодера изменился: " + videoDecoder.getOutputFormat());
+                outputBufferIndex = videoDecoder.dequeueOutputBuffer(bufferInfo, 0);
+            }
+
+            if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                Log.i(TAG, "!!! feedDecoder: Формат декодера изменился: " + videoDecoder.getOutputFormat());
+                MediaFormat newFormat = videoDecoder.getOutputFormat();
+                int newWidth = newFormat.getInteger(MediaFormat.KEY_WIDTH);
+                int newHeight = newFormat.getInteger(MediaFormat.KEY_HEIGHT);
+                Log.d(TAG, "feedDecoder: Новые размеры от декодера: " + newWidth + "x" + newHeight);
+
+                // Теперь, когда мы доверяем данным от декодера, мы используем ИХ для установки AspectRatio
+                runOnUiThread(() -> {
+                    Log.d(TAG, "UI Thread: Устанавливаем пропорции " + newWidth + "x" + newHeight + " из данных декодера.");
+                    surfaceView.setAspectRatio(newWidth, newHeight);
+                });
             }
         } catch (Exception e) {
-            Log.e(TAG, "Ошибка при подаче данных в декодер", e);
+            Log.e(TAG, "feedDecoder: Ошибка при работе с декодером.", e);
         }
     }
 
-
     private void stopClient() {
-        isConnectionRequested = false;
+        Log.d(TAG, "stopClient: Начало остановки клиента.");
+        shouldBeConnecting.set(false);
         if (networkThread != null) {
+            Log.d(TAG, "stopClient: Прерываем сетевой поток.");
             networkThread.interrupt();
             networkThread = null;
         }
         if (videoDecoder != null) {
+            Log.d(TAG, "stopClient: Освобождаем декодер.");
             try {
                 videoDecoder.stop();
                 videoDecoder.release();
-            } catch (IllegalStateException e) {
-                Log.e(TAG, "Ошибка при остановке декодера", e);
+            } catch (Exception e) {
+                Log.e(TAG, "stopClient: Ошибка при остановке декодера.", e);
             }
             videoDecoder = null;
         }
+        Log.d(TAG, "stopClient: Остановка клиента завершена.");
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        Log.d(TAG, "onDestroy: Активити уничтожается.");
         stopClient();
     }
 }

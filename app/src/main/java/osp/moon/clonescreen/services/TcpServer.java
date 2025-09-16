@@ -2,8 +2,7 @@ package osp.moon.clonescreen.services;
 
 import android.util.Log;
 
-import java.io.IOException;
-import java.io.OutputStream;
+import java.io.IOException;import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.ByteBuffer;
@@ -18,140 +17,133 @@ public class TcpServer extends Thread {
     private Socket clientSocket;
     private OutputStream outputStream;
     private final AtomicBoolean isRunning = new AtomicBoolean(true);
+
     private final Object clientConnectionLock = new Object();
-    private boolean isClientConnected = false;
+    private volatile boolean isClientConnected = false;
+
+    public boolean isClientConnected() {
+        return isClientConnected;
+    }
 
     @Override
     public void run() {
         try {
-            Log.d(TAG, "Сервер запускается на порту: " + SERVER_PORT);
+            Log.d(TAG, "run: Сервер запускается на порту: " + SERVER_PORT);
             serverSocket = new ServerSocket(SERVER_PORT);
 
-            while (isRunning.get()) {
-                Log.d(TAG, "Ожидание подключения клиента...");
-                clientSocket = serverSocket.accept(); // Ждем клиента
-                Log.d(TAG, "Клиент подключен: " + clientSocket.getInetAddress());
+            while (isRunning.get() && !serverSocket.isClosed()) {
+                Log.d(TAG, "run: Ожидание нового подключения клиента в serverSocket.accept()...");
+                try {
+                    clientSocket = serverSocket.accept();
+                    Log.i(TAG, "run: КЛИЕНТ ПОДКЛЮЧЕН: " + clientSocket.getInetAddress());
 
-                outputStream = clientSocket.getOutputStream();
+                    outputStream = clientSocket.getOutputStream();
 
-                // --- ИЗМЕНЕНИЕ 2: Сигнализируем, что клиент подключен ---
-                synchronized (clientConnectionLock) {
-                    isClientConnected = true;
-                    clientConnectionLock.notifyAll(); // "Пробуждаем" поток, который ждет этого события
-                }
-
-                // Цикл проверки активности клиента
-                while (isRunning.get() && clientSocket != null && clientSocket.isConnected()) {
-                    try {
-                        clientSocket.sendUrgentData(0xFF);
-                        Thread.sleep(2000);
-                    } catch (Exception e) {
-                        Log.w(TAG, "Соединение с клиентом потеряно.");
-                        break;
+                    synchronized (clientConnectionLock) {
+                        isClientConnected = true;
+                        clientConnectionLock.notifyAll(); // "Пробуждаем" поток, который ждет
                     }
-                }
 
-                closeClientResources();
+                    // Просто ждем, пока соединение не будет разорвано
+                    while (isClientConnected && clientSocket != null && clientSocket.isConnected()) {
+                        try {
+                            // Отправка "heartbeat" для быстрой детекции разрыва
+                            clientSocket.sendUrgentData(0xFF);
+                            Thread.sleep(2000);
+                        } catch (IOException e) {
+                            Log.w(TAG, "run: Соединение с клиентом потеряно (sendUrgentData провалился). " + e.getMessage());
+                            break; // Выходим из внутреннего цикла, чтобы закрыть ресурсы
+                        }
+                    }
+
+                } catch (IOException e) {
+                    if (isRunning.get()) {
+                        Log.w(TAG, "run: Ошибка принятия клиента или во внутреннем цикле. " + e.getMessage());
+                    }
+                } finally {
+                    Log.d(TAG, "run: Блок finally. Закрываем ресурсы текущего клиента.");
+                    closeClientResources();
+                }
             }
-        } catch (IOException e) {
-            Log.e(TAG, "Ошибка в работе TcpServer", e);
+        } catch (Exception e) {
+            if (isRunning.get()) Log.e(TAG, "run: Критическая ошибка в TcpServer (не удалось создать ServerSocket?).", e);
         } finally {
+            Log.d(TAG, "run: Блок finally. Остановка всего сервера.");
             stopServer();
         }
     }
 
-    // --- ИЗМЕНЕНИЕ 3: Метод для ожидания клиента ---
     public void waitForClient() throws InterruptedException {
         synchronized (clientConnectionLock) {
             while (!isClientConnected) {
-                Log.d(TAG, "Поток кодировщика ждет подключения клиента...");
+                Log.d(TAG, "waitForClient: Поток кодировщика ждет подключения клиента...");
                 clientConnectionLock.wait();
             }
-            Log.d(TAG, "Поток кодировщика 'проснулся'. Клиент на месте.");
+            Log.i(TAG, "waitForClient: Поток кодировщика 'проснулся'. Клиент на месте.");
         }
     }
 
     public synchronized void sendResolution(int width, int height) {
         if (outputStream != null && isClientConnected) {
             try {
-                // Тип пакета 2: разрешение
-                outputStream.write(2);
-                // Отправляем ширину (4 байта)
+                Log.d(TAG, "sendResolution: Отправка пакета ТИП 2: " + width + "x" + height);
+                outputStream.write(2); // Тип пакета 2: разрешение
                 outputStream.write(ByteBuffer.allocate(4).putInt(width).array());
-                // Отправляем высоту (4 байта)
                 outputStream.write(ByteBuffer.allocate(4).putInt(height).array());
                 outputStream.flush();
-                Log.d(TAG, "Отправлено разрешение: " + width + "x" + height);
             } catch (IOException e) {
-                Log.e(TAG, "Ошибка при отправке разрешения", e);
+                Log.e(TAG, "sendResolution: Ошибка при отправке.", e);
                 closeClientResources();
             }
+        } else {
+            Log.w(TAG, "sendResolution: Попытка отправки, но клиент не подключен.");
         }
     }
 
     public synchronized void sendData(byte[] data, boolean isConfig) {
         if (outputStream != null && isClientConnected) {
             try {
-                // Тип пакета: 0 для конфига, 1 для видеокадра
                 int packetType = isConfig ? 0 : 1;
-                outputStream.write(packetType);
-
-                // Размер данных (4 байта)
-                int size = data.length;
-                byte[] sizeBytes = ByteBuffer.allocate(4).putInt(size).array();
-                outputStream.write(sizeBytes);
-
-                // Сами данные
+                outputStream.write(packetType); // Тип пакета 0 (конфиг) или 1 (кадр)
+                outputStream.write(ByteBuffer.allocate(4).putInt(data.length).array());
                 outputStream.write(data);
                 outputStream.flush();
             } catch (IOException e) {
-                Log.e(TAG, "Ошибка при отправке данных", e);
-                closeClientResources();
-            }
-        }
-    }
-
-    private synchronized void sendData(byte[] data) {
-        if (outputStream != null && isClientConnected) {
-            try {
-                // --- НОВАЯ ЛОГИКА ---
-                // 1. Получаем размер данных (длину массива).
-                int size = data.length;
-                // 2. Преобразуем int в массив из 4 байт.
-                byte[] sizeBytes = ByteBuffer.allocate(4).putInt(size).array();
-
-                // 3. Сначала отправляем 4 байта с размером.
-                outputStream.write(sizeBytes);
-                // 4. Затем отправляем сами данные.
-                outputStream.write(data);
-
-                outputStream.flush();
-            } catch (IOException e) {
-                Log.e(TAG, "Ошибка при отправке данных", e);
+                Log.e(TAG, "sendData: Ошибка при отправке.", e);
                 closeClientResources();
             }
         }
     }
 
     private synchronized void closeClientResources() {
-        isClientConnected = false; // Сбрасываем флаг
-        try {
-            if (outputStream != null) outputStream.close();
-            if (clientSocket != null) clientSocket.close();
-        } catch (IOException e) {
-            Log.e(TAG, "Ошибка при закрытии ресурсов", e);
-        } finally {
-            outputStream = null;
-            clientSocket = null;
+        if (isClientConnected) {
+            Log.i(TAG, "closeClientResources: Закрытие ресурсов КЛИЕНТА.");
+            isClientConnected = false;
+            try {
+                if (outputStream != null) outputStream.close();
+                if (clientSocket != null) clientSocket.close();
+            } catch (IOException e) {
+                Log.e(TAG, "closeClientResources: Ошибка при закрытии.", e);
+            } finally {
+                outputStream = null;
+                clientSocket = null;
+            }
         }
     }
 
     public void stopServer() {
+        Log.i(TAG, "stopServer: Начало полной остановки TCP сервера.");
         isRunning.set(false);
         closeClientResources();
         try {
-            if (serverSocket != null) serverSocket.close();
-        } catch (IOException e) { /* ignore */ }
-        interrupt();
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                serverSocket.close();
+                Log.d(TAG, "stopServer: ServerSocket закрыт.");
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "stopServer: Ошибка при закрытии ServerSocket.", e);
+        }
+        interrupt(); // Прерываем сам поток сервера
+        Log.i(TAG, "stopServer: Остановка TCP сервера завершена.");
     }
 }
