@@ -102,28 +102,51 @@ public class ServerActivity extends AppCompatActivity {
     }
 
     /**
-     * Получает IP-адрес устройства в сети Wi-Fi.
-     * Возвращает отформатированную строку или сообщение об ошибке.
+     * Получает IP-адрес устройства.
+     * Корректно работает как в режиме Wi-Fi клиента, так и в режиме Точки Доступа (Hotspot).
      */
-    private String getIpAddress() {
+    private String getIpAddress() {        // Сначала пытаемся найти IP в режиме Точки Доступа
+        try {
+            for (java.util.Enumeration<java.net.NetworkInterface> en = java.net.NetworkInterface.getNetworkInterfaces(); en.hasMoreElements();) {
+                java.net.NetworkInterface intf = en.nextElement();
+                // Ищем интерфейс точки доступа (обычно wlan0 или ap0)
+                if (intf.getName().contains("wlan") || intf.getName().contains("ap")) {
+                    for (java.util.Enumeration<java.net.InetAddress> enumIpAddr = intf.getInetAddresses(); enumIpAddr.hasMoreElements();) {
+                        java.net.InetAddress inetAddress = enumIpAddr.nextElement();
+                        // Ищем IPv4 адрес, который не является loopback
+                        if (!inetAddress.isLoopbackAddress() && inetAddress instanceof java.net.Inet4Address) {
+                            Log.d(TAG, "Найден IP адрес точки доступа: " + inetAddress.getHostAddress());
+                            return inetAddress.getHostAddress();
+                        }
+                    }
+                }
+            }
+        } catch (java.net.SocketException ex) {
+            Log.e(TAG, "Ошибка при получении IP адреса точки доступа", ex);
+        }
+
+        // Если в режиме точки доступа найти не удалось, пробуем старый способ (режим клиента Wi-Fi)
+        Log.d(TAG, "IP точки доступа не найден, ищем IP в обычной Wi-Fi сети...");
         WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
         if (wifiManager != null) {
             // Проверяем, включен ли Wi-Fi
             if (!wifiManager.isWifiEnabled()) {
                 return "Wi-Fi выключен";
             }
+
             WifiInfo wifiInfo = wifiManager.getConnectionInfo();
             int ip = wifiInfo.getIpAddress();
-            // Если IP-адрес равен 0, значит, соединение еще не установлено
-            if (ip == 0) {
-                return "Нет подключения к Wi-Fi";
+            if (ip != 0) {
+                String ipAddress = String.format(Locale.getDefault(), "%d.%d.%d.%d",
+                        (ip & 0xff), (ip >> 8 & 0xff), (ip >> 16 & 0xff), (ip >> 24 & 0xff));
+                Log.d(TAG, "Найден IP адрес в Wi-Fi сети: " + ipAddress);
+                return ipAddress;
             }
-            // Форматируем IP-адрес из int в строку "xxx.xxx.xxx.xxx"
-            return String.format(Locale.getDefault(), "%d.%d.%d.%d",
-                    (ip & 0xff), (ip >> 8 & 0xff), (ip >> 16 & 0xff), (ip >> 24 & 0xff));
         }
+
         return "IP не найден";
     }
+
 
     private void stopCaptureService() {
         Intent serviceIntent = new Intent(this, ScreenCaptureService.class);

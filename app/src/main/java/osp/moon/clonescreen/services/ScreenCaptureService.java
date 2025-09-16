@@ -27,6 +27,7 @@ import androidx.core.app.NotificationCompat;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Locale;
 
 import osp.moon.clonescreen.R;
 
@@ -54,6 +55,8 @@ public class ScreenCaptureService extends Service {
     private Surface inputSurface;
     private Thread workerThread;
     private TcpServer tcpServer;
+
+    // ... (методы onCreate, onStartCommand, startCapture без изменений)
 
     @Override
     public void onCreate() {
@@ -104,24 +107,18 @@ public class ScreenCaptureService extends Service {
         return START_NOT_STICKY;
     }
 
-    // ================== НАЧАЛО ВАЖНЫХ ИЗМЕНЕНИЙ ==================
     private void startCapture() {
         Log.d(TAG, "MediaProjection получен. Начинаем настройку...");
 
-        // Регистрируем Callback для MediaProjection, чтобы отслеживать его состояние.
-        // Это ОБЯЗАТЕЛЬНО для новых версий Android, чтобы избежать падения.
         if (mediaProjection != null) {
             mediaProjection.registerCallback(new MediaProjection.Callback() {
                 @Override
                 public void onStop() {
                     super.onStop();
                     Log.w(TAG, "MediaProjection остановлен извне (пользователем или системой). Останавливаем сервис.");
-                    // Если захват был прерван, мы должны остановить наш сервис,
-                    // чтобы корректно освободить все ресурсы.
-                    // Вызов stopSelf() приведет к вызову onDestroy() и releaseResources().
                     stopSelf();
                 }
-            }, null); // Второй параметр 'handler' можно оставить null, callback будет на главном потоке.
+            }, null);
         }
 
         workerThread = new Thread(() -> {
@@ -129,17 +126,18 @@ public class ScreenCaptureService extends Service {
                 tcpServer = new TcpServer();
                 tcpServer.start();
 
+                // Ждем, пока клиент подключится к TCP серверу
+                tcpServer.waitForClient();
+
+                // Только после подключения клиента готовим кодировщик и отправляем разрешение
                 prepareVideoEncoder();
 
-                // Теперь этот вызов будет безопасным
                 virtualDisplay = mediaProjection.createVirtualDisplay("ScreenCapture",
                         screenWidth, screenHeight, screenDpi,
                         DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                         inputSurface, null, null);
 
-                tcpServer.waitForClient();
-
-                Log.i(TAG, "Настройка завершена и клиент подключен. Начинаем захват и кодирование...");
+                Log.i(TAG, "Настройка завершена. Начинаем захват и кодирование...");
                 drainEncoder();
 
             } catch (IOException e) {
@@ -154,8 +152,9 @@ public class ScreenCaptureService extends Service {
         });
         workerThread.start();
     }
-    // =================== КОНЕЦ ВАЖНЫХ ИЗМЕНЕНИЙ ===================
 
+
+    // ================== НАЧАЛО ИЗМЕНЕНИЙ ==================
     private void prepareVideoEncoder() throws IOException {
         WindowManager windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
         DisplayMetrics metrics = new DisplayMetrics();
@@ -163,6 +162,12 @@ public class ScreenCaptureService extends Service {
         screenWidth = metrics.widthPixels;
         screenHeight = metrics.heightPixels;
         screenDpi = metrics.densityDpi;
+
+        // --- ИЗМЕНЕНИЕ 1: Отправляем разрешение клиенту СРАЗУ ПОСЛЕ ПОДКЛЮЧЕНИЯ ---
+        if (tcpServer != null) {
+            tcpServer.sendResolution(screenWidth, screenHeight);
+        }
+        // -------------------------------------------------------------------------
 
         MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, screenWidth, screenHeight);
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
@@ -198,9 +203,11 @@ public class ScreenCaptureService extends Service {
                         sps.get(spsData);
                         byte[] ppsData = new byte[pps.remaining()];
                         pps.get(ppsData);
-                        Log.i(TAG, "drainEncoder: Найдены SPS (" + spsData.length + " байт) и PPS (" + ppsData.length + " байт). Отправляем...");
-                        tcpServer.sendData(spsData);
-                        tcpServer.sendData(ppsData);
+                        Log.i(TAG, "drainEncoder: Найдены SPS и PPS. Отправляем...");
+
+                        // --- ИЗМЕНЕНИЕ 2: Используем новый метод sendData с флагом isConfig ---
+                        tcpServer.sendData(spsData, true); // true, так как это конфиг
+                        tcpServer.sendData(ppsData, true); // true, так как это конфиг
                     }
                 } else if (outputBufferIndex >= 0) {
                     ByteBuffer outputBuffer = videoEncoder.getOutputBuffer(outputBufferIndex);
@@ -208,7 +215,8 @@ public class ScreenCaptureService extends Service {
                         byte[] data = new byte[bufferInfo.size];
                         outputBuffer.get(data);
                         if (tcpServer != null) {
-                            tcpServer.sendData(data);
+                            // --- ИЗМЕНЕНИЕ 3: Используем новый метод sendData ---
+                            tcpServer.sendData(data, false); // false, так как это видеокадр
                         }
                     }
                     videoEncoder.releaseOutputBuffer(outputBufferIndex, false);
@@ -220,6 +228,10 @@ public class ScreenCaptureService extends Service {
         }
         Log.w(TAG, "drainEncoder: Цикл кодирования завершен.");
     }
+    // =================== КОНЕЦ ИЗМЕНЕНИЙ ===================
+
+
+    // ... (методы releaseResources, onDestroy, getNotification, onBind без изменений)
 
     private void releaseResources() {
         Log.d(TAG, "Освобождение ресурсов...");
@@ -247,9 +259,6 @@ public class ScreenCaptureService extends Service {
             inputSurface = null;
         }
         if (mediaProjection != null) {
-            // Callback, который мы зарегистрировали, нужно отрегистрировать.
-            // Хотя система и так остановит MediaProjection, хорошая практика - делать это явно.
-            // Но так как мы его полностью уничтожаем, это не критично.
             try {
                 mediaProjection.stop();
             } catch(Exception e) {/*ignore*/}
@@ -279,7 +288,7 @@ public class ScreenCaptureService extends Service {
         return notificationBuilder.setOngoing(true)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentTitle("ScreenCopy")
-                .setContentText(contentText) // Используем переданный текст
+                .setContentText(contentText)
                 .setPriority(NotificationManager.IMPORTANCE_MIN)
                 .setCategory(Notification.CATEGORY_SERVICE)
                 .build();

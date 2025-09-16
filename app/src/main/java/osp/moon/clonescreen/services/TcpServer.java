@@ -18,8 +18,6 @@ public class TcpServer extends Thread {
     private Socket clientSocket;
     private OutputStream outputStream;
     private final AtomicBoolean isRunning = new AtomicBoolean(true);
-
-    // --- ИЗМЕНЕНИЕ 1: Добавляем объект-замок ---
     private final Object clientConnectionLock = new Object();
     private boolean isClientConnected = false;
 
@@ -73,7 +71,47 @@ public class TcpServer extends Thread {
         }
     }
 
-    public synchronized void sendData(byte[] data) {
+    public synchronized void sendResolution(int width, int height) {
+        if (outputStream != null && isClientConnected) {
+            try {
+                // Тип пакета 2: разрешение
+                outputStream.write(2);
+                // Отправляем ширину (4 байта)
+                outputStream.write(ByteBuffer.allocate(4).putInt(width).array());
+                // Отправляем высоту (4 байта)
+                outputStream.write(ByteBuffer.allocate(4).putInt(height).array());
+                outputStream.flush();
+                Log.d(TAG, "Отправлено разрешение: " + width + "x" + height);
+            } catch (IOException e) {
+                Log.e(TAG, "Ошибка при отправке разрешения", e);
+                closeClientResources();
+            }
+        }
+    }
+
+    public synchronized void sendData(byte[] data, boolean isConfig) {
+        if (outputStream != null && isClientConnected) {
+            try {
+                // Тип пакета: 0 для конфига, 1 для видеокадра
+                int packetType = isConfig ? 0 : 1;
+                outputStream.write(packetType);
+
+                // Размер данных (4 байта)
+                int size = data.length;
+                byte[] sizeBytes = ByteBuffer.allocate(4).putInt(size).array();
+                outputStream.write(sizeBytes);
+
+                // Сами данные
+                outputStream.write(data);
+                outputStream.flush();
+            } catch (IOException e) {
+                Log.e(TAG, "Ошибка при отправке данных", e);
+                closeClientResources();
+            }
+        }
+    }
+
+    private synchronized void sendData(byte[] data) {
         if (outputStream != null && isClientConnected) {
             try {
                 // --- НОВАЯ ЛОГИКА ---
