@@ -17,12 +17,12 @@
     <!-- Он находится поверх SurfaceView. -->
     <LinearLayout
         android:id="@+id/controls_container"
-        android:layout_width="match_parent"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal|center_vertical"
+        android:background="#80000000"
         android:orientation="vertical"
-        android:layout_gravity="bottom"
-        android:padding="16dp"
-        android:background="#80000000"> <!-- Полупрозрачный фон для читаемости -->
+        android:padding="16dp"> <!-- Полупрозрачный фон для читаемости -->
 
         <EditText
             android:id="@+id/ip_address_input"
