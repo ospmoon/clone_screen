@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/nav_graph"
+    app:startDestination="@id/welcomeFragment">
+
+    <fragment
+        android:id="@+id/welcomeFragment"
+        android:name="osp.moon.clonescreen.fragments.WelcomeFragment"
+        tools:layout="@layout/fragment_welcome">
+    </fragment>
+
+    <fragment
+        android:id="@+id/serverFragment"
+        android:name="osp.moon.clonescreen.fragments.ServerFragment"
+        android:label="@string/server_title"
+        tools:layout="@layout/fragment_server">
+    </fragment>
+
+    <fragment
+        android:id="@+id/clientFragment"
+        android:name="osp.moon.clonescreen.fragments.ClientFragment"
+        android:label="@string/client_title"
+        tools:layout="@layout/fragment_client">
+    </fragment>
+
+</navigation>

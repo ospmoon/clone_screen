@@ -35,6 +35,7 @@ dependencies {
     implementation(libs.material)
     implementation(libs.activity)
 
-    // Добавьте эту зависимость для Android Auto и медиа
-    //implementation(libs.media3.session)
+    //navigation for android:name="androidx.navigation.fragment.NavHostFragment"
+    implementation(libs.navigation.fragment.ktx)
+    //implementation("androidx.navigation:navigation-ui-ktx:2.9.2")
 }
