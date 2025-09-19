@@ -11,6 +11,7 @@ import android.util.Log;
 
 import java.util.Locale;
 
+import osp.moon.clonescreen.R;
 import osp.moon.clonescreen.services.ScreenCaptureService;
 
 public class AppHelper {
@@ -46,6 +47,7 @@ public class AppHelper {
      * Корректно работает как в режиме Wi-Fi клиента, так и в режиме Точки Доступа (Hotspot).
      */
     public static String getIpAddress(final Context context) {
+        Log.d(TAG, "getIpAddress() called.");
         try {
             for (java.util.Enumeration<java.net.NetworkInterface> en = java.net.NetworkInterface.getNetworkInterfaces(); en.hasMoreElements();) {
                 java.net.NetworkInterface intf = en.nextElement();
@@ -69,7 +71,7 @@ public class AppHelper {
         WifiManager wifiManager = (WifiManager) context.getApplicationContext().getSystemService(WIFI_SERVICE);
         if (wifiManager != null) {
             if (!wifiManager.isWifiEnabled()) {
-                return "Wi-Fi выключен";
+                return context.getString(R.string.wifi_off_message);
             }
 
             WifiInfo wifiInfo = wifiManager.getConnectionInfo();
@@ -82,6 +84,6 @@ public class AppHelper {
             }
         }
 
-        return "IP не найден";
+        return context.getString(R.string.ip_not_found_message);
     }
 }

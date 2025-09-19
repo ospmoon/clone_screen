@@ -5,8 +5,14 @@
     <string name="start_button_title">Start screen cloning</string>
     <string name="stop_button_title">Stop</string>
     <string name="screen_cloning_has_begun_toast_message">Screen cloning has begun!</string>
+    <string name="wifi_off_message">Wi-Fi is off</string>
+    <string name="ip_not_found_message">IP not found</string>
+    <string name="service_not_available_message">Screen capture service not available.</string>
 
     <string name="client_title">Client</string>
     <string name="ip_server_hint">Server IP address</string>
+    <string name="enter_ip_toast_message">Enter the broadcast IP address</string>
     <string name="connect_button_title">Connect</string>
+    <string name="connected_toast_message">Connected!</string>
+    <string name="reconnecting_toast_message">Reconnecting…</string>
 </resources>

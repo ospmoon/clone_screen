@@ -1,13 +1,11 @@
 package osp.moon.clonescreen.fragments;
 
 import static android.app.Activity.RESULT_OK;
-import static androidx.core.content.ContextCompat.getSystemService;
 
 import android.content.Context;
 import android.content.Intent;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
-import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.LayoutInflater;
@@ -21,6 +19,7 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 
 import osp.moon.clonescreen.R;
@@ -49,7 +48,11 @@ public class ServerFragment extends Fragment {
         super.onCreate(savedInstanceState);
         Log.i(TAG, "onCreate()");
 
-        mMediaProjectionManager = (MediaProjectionManager) getSystemService(requireActivity(), Context.MEDIA_PROJECTION_SERVICE);
+        mMediaProjectionManager = ContextCompat.getSystemService(requireActivity(), MediaProjectionManager.class);
+        if (mMediaProjectionManager == null) {
+            Log.e(TAG, "MediaProjectionManager not available");
+            Toast.makeText(requireActivity(), requireActivity().getString(R.string.service_not_available_message), Toast.LENGTH_LONG).show();
+        }
     }
 
     @Nullable

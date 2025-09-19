@@ -1,27 +1,34 @@
-package osp.moon.clonescreen;
+package osp.moon.clonescreen.fragments;
 
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.LayoutInflater;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.Toast;
 import androidx.annotation.NonNull;
-import androidx.appcompat.app.AppCompatActivity;
+import androidx.annotation.Nullable;
+import androidx.fragment.app.Fragment;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-public class ClientActivity extends AppCompatActivity implements SurfaceHolder.Callback {
+import osp.moon.clonescreen.AutoFitSurfaceView;
+import osp.moon.clonescreen.R;
 
-    private static final String TAG = ClientActivity.class.getName();
+public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
+
+    private static final String TAG = ClientFragment.class.getName();
 
     private static final String MIME_TYPE = MediaFormat.MIMETYPE_VIDEO_AVC;
     private static final int PORT = 12345;
@@ -37,30 +44,37 @@ public class ClientActivity extends AppCompatActivity implements SurfaceHolder.C
     private final AtomicBoolean shouldBeConnecting = new AtomicBoolean(false);
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    public void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_client);
-        Log.d(TAG, "onCreate: Активити создано.");
+        Log.d(TAG, "onCreate");
+    }
 
-        ipInput = findViewById(R.id.ip_address_input);
-        controlsContainer = findViewById(R.id.controls_container);
-        Button connectButton = findViewById(R.id.connect_button);
-        surfaceView = findViewById(R.id.client_surface_view);
+    @Nullable
+    @Override
+    public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
+        Log.i(TAG, "onCreateView()");
+        View root = inflater.inflate(R.layout.fragment_client, container, false);
 
+        ipInput = root.findViewById(R.id.ip_address_input);
         ipInput.setText(masterIpAddress);
+
+        controlsContainer = root.findViewById(R.id.controls_container);
+        surfaceView = root.findViewById(R.id.client_surface_view);
         surfaceView.getHolder().addCallback(this);
 
+        Button connectButton = root.findViewById(R.id.connect_button);
         connectButton.setOnClickListener(v -> {
             Log.d(TAG, "onClick: Нажата кнопка 'Подключиться'.");
             masterIpAddress = ipInput.getText().toString();
             if (masterIpAddress.isEmpty()) {
-                Toast.makeText(this, "Введите IP-адрес", Toast.LENGTH_SHORT).show();
+                Toast.makeText(requireActivity(), requireActivity().getString(R.string.enter_ip_toast_message), Toast.LENGTH_SHORT).show();
                 return;
             }
             shouldBeConnecting.set(true);
             controlsContainer.setVisibility(View.GONE);
             startClient();
         });
+        return root;
     }
 
     @Override
@@ -101,7 +115,7 @@ public class ClientActivity extends AppCompatActivity implements SurfaceHolder.C
             while (shouldBeConnecting.get() && !Thread.currentThread().isInterrupted()) {
                 try (Socket socket = new Socket(masterIpAddress, PORT)) {
                     Log.i(TAG, "networkThread: УСПЕШНО ПОДКЛЮЧЕНО к " + masterIpAddress);
-                    runOnUiThread(() -> Toast.makeText(ClientActivity.this, "Подключено!", Toast.LENGTH_SHORT).show());
+                    requireActivity().runOnUiThread(() -> Toast.makeText(requireActivity(), requireActivity().getString(R.string.connected_toast_message), Toast.LENGTH_SHORT).show());
 
                     try (InputStream inputStream = socket.getInputStream()) {
                         Log.d(TAG, "networkThread: Начинаем цикл чтения данных из сокета.");
@@ -144,7 +158,7 @@ public class ClientActivity extends AppCompatActivity implements SurfaceHolder.C
                     if (shouldBeConnecting.get()) {
                         Log.e(TAG, "networkThread: Ошибка в цикле подключения: " + e.getMessage());
                         Log.w(TAG, "networkThread: Пауза 2 секунды перед переподключением...");
-                        runOnUiThread(() -> Toast.makeText(ClientActivity.this, "Переподключение...", Toast.LENGTH_SHORT).show());
+                        requireActivity().runOnUiThread(() -> Toast.makeText(requireActivity(), requireActivity().getString(R.string.reconnecting_toast_message), Toast.LENGTH_SHORT).show());
                         try { Thread.sleep(2000); } catch (InterruptedException interruptedException) {
                             Log.w(TAG, "networkThread: Поток прерван во время паузы.");
                             Thread.currentThread().interrupt();
@@ -153,7 +167,7 @@ public class ClientActivity extends AppCompatActivity implements SurfaceHolder.C
                 }
             }
             Log.d(TAG, "networkThread: Вышли из основного цикла. Поток завершается.");
-            runOnUiThread(() -> {
+            requireActivity().runOnUiThread(() -> {
                 Log.d(TAG, "UI Thread: Показываем панель управления.");
                 controlsContainer.setVisibility(View.VISIBLE);
             });
@@ -197,10 +211,12 @@ public class ClientActivity extends AppCompatActivity implements SurfaceHolder.C
             int inputBufferIndex = videoDecoder.dequeueInputBuffer(10000);
             if (inputBufferIndex >= 0) {
                 ByteBuffer inputBuffer = videoDecoder.getInputBuffer(inputBufferIndex);
-                inputBuffer.clear();
-                inputBuffer.put(data);
-                int flags = isConfig ? MediaCodec.BUFFER_FLAG_CODEC_CONFIG : 0;
-                videoDecoder.queueInputBuffer(inputBufferIndex, 0, data.length, System.nanoTime() / 1000, flags);
+                if (inputBuffer != null) {
+                    inputBuffer.clear();
+                    inputBuffer.put(data);
+                    int flags = isConfig ? MediaCodec.BUFFER_FLAG_CODEC_CONFIG : 0;
+                    videoDecoder.queueInputBuffer(inputBufferIndex, 0, data.length, System.nanoTime() / 1000, flags);
+                }
             }
 
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
@@ -219,7 +235,7 @@ public class ClientActivity extends AppCompatActivity implements SurfaceHolder.C
                 Log.d(TAG, "feedDecoder: Новые размеры от декодера: " + newWidth + "x" + newHeight);
 
                 // Теперь, когда мы доверяем данным от декодера, мы используем ИХ для установки AspectRatio
-                runOnUiThread(() -> {
+                requireActivity().runOnUiThread(() -> {
                     Log.d(TAG, "UI Thread: Устанавливаем пропорции " + newWidth + "x" + newHeight + " из данных декодера.");
                     surfaceView.setAspectRatio(newWidth, newHeight);
                 });
@@ -251,9 +267,21 @@ public class ClientActivity extends AppCompatActivity implements SurfaceHolder.C
     }
 
     @Override
-    protected void onDestroy() {
+    public void onDestroy() {
         super.onDestroy();
         Log.d(TAG, "onDestroy: Активити уничтожается.");
         stopClient();
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        Log.i(TAG, "onPause()");
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        Log.i(TAG, "onResume()");
     }
 }

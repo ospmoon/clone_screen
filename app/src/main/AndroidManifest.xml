@@ -33,18 +33,8 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".ClientActivity">
-        </activity>
-
-        <activity
-            android:name=".ServerActivity"
-            android:launchMode="singleTop">
-        </activity>
-
         <service
             android:name=".services.ScreenCaptureService"
-            android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
