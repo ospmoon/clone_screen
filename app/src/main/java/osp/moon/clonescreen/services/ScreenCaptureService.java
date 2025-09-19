@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.graphics.Color;
+import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
 import android.media.MediaCodec;
@@ -16,10 +17,13 @@ import android.media.MediaFormat;
 import android.media.projection.MediaProjection;
 import android.os.Build;
 import android.os.IBinder;
+import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Surface;
 import android.view.WindowManager;
+import android.os.Handler;
+import android.os.Looper;
 
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
@@ -30,10 +34,15 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import osp.moon.clonescreen.R;
+import osp.moon.clonescreen.customviews.BorderView;
 
 public class ScreenCaptureService extends Service {
 
     private static final String TAG = ScreenCaptureService.class.getName();
+
+    public static final String ACTION_SHOW_BORDER_GREEN = "osp.moon.clonescreen.SHOW_BORDER_GREEN";
+    public static final String ACTION_SHOW_BORDER_RED = "osp.moon.clonescreen.SHOW_BORDER_RED";
+    public static final String ACTION_HIDE_BORDER = "osp.moon.clonescreen.HIDE_BORDER";
 
     private static final int SERVICE_ID = 123;
     public static final String ACTION_PREPARE = "osp.moon.clonescreen.PREPARE";
@@ -52,6 +61,10 @@ public class ScreenCaptureService extends Service {
     private Thread workerThread;
     private TcpServer tcpServer;
     private Thread resolutionChangeDetector;
+    private WindowManager windowManager;
+    private BorderView borderView;
+    private Handler mainThreadHandler;
+    private WindowManager.LayoutParams borderViewParams;
 
     // --- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: ОБЪЕКТ ДЛЯ БЛОКИРОВКИ ---
     private final Object encoderLock = new Object();
@@ -62,6 +75,8 @@ public class ScreenCaptureService extends Service {
     public void onCreate() {
         super.onCreate();
         Log.d(TAG, "onCreate: Сервис создан.");
+        windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+        mainThreadHandler = new Handler(Looper.getMainLooper());
     }
 
     @Override
@@ -89,6 +104,19 @@ public class ScreenCaptureService extends Service {
                 Log.d(TAG, "onStartCommand: Обработка ACTION_STOP.");
                 stopCapture();
                 break;
+            case ACTION_SHOW_BORDER_GREEN:
+                Log.d(TAG, "onStartCommand: Обработка ACTION_SHOW_BORDER_GREEN.");
+                mainThreadHandler.post(() -> showBorderView(Color.GREEN)); // Обернули
+                break;
+            case ACTION_SHOW_BORDER_RED: // Этот case больше не нужен, т.к. управляется onClientConnectedStateChanged
+                // Log.d(TAG, "onStartCommand: Обработка ACTION_SHOW_BORDER_RED.");
+                //mainThreadHandler.post(() -> updateBorderColor(Color.RED)); // Обернули
+                break;
+            case ACTION_HIDE_BORDER:
+                Log.d(TAG, "onStartCommand: Обработка ACTION_HIDE_BORDER.");
+                mainThreadHandler.post(this::hideBorderView); // Обернули (ссылка на метод)
+                break;
+
         }
         return START_NOT_STICKY;
     }
@@ -110,6 +138,16 @@ public class ScreenCaptureService extends Service {
     private void startCapture() {
         Log.d(TAG, "startCapture: Устанавливаем isRunning=true и запускаем workerThread.");
         isRunning.set(true);
+
+        // Рамка УЖЕ должна быть показана командой из ServerFragment (ACTION_SHOW_BORDER_GREEN)
+        // Если здесь ее нет, значит что-то пошло не так с разрешением или командой.
+        // Можно добавить проверку:
+        if (borderView == null || borderView.getWindowToken() == null) {
+            Log.w(TAG, "startCapture: BorderView не отображается при старте захвата. Возможно, нет разрешения.");
+            // Можно попробовать показать здесь еще раз, но это дублирование логики.
+            // showBorderView(Color.GREEN);
+        }
+
         workerThread = new Thread(() -> {
             Log.d(TAG, "workerThread: Поток запущен.");
             try {
@@ -124,7 +162,7 @@ public class ScreenCaptureService extends Service {
                 }, null);
 
                 Log.d(TAG, "workerThread: Создаем и запускаем TcpServer.");
-                tcpServer = new TcpServer();
+                tcpServer = new TcpServer(this);
                 tcpServer.start();
 
                 Log.d(TAG, "workerThread: Ожидаем подключения клиента...");
@@ -339,10 +377,107 @@ public class ScreenCaptureService extends Service {
             }
             Log.d(TAG, "releaseAllResources: Выходим из synchronized блока.");
         }
+        if (mainThreadHandler != null) { // Проверка на null, если сервис быстро уничтожается
+            mainThreadHandler.post(this::hideBorderView); // Убираем рамку при остановке сервиса
+        }
         Log.i(TAG, "releaseAllResources: Все ресурсы освобождены.");
     }
 
-    // getNotification без изменений...
+    private void showBorderView(int color) {
+        if (borderView != null) { // Если уже есть, просто меняем цвет
+            borderView.setBorderColor(color);
+            if (borderView.getWindowToken() == null) { // Проверяем, добавлено ли View в WindowManager
+                try {
+                    windowManager.addView(borderView, borderViewParams);
+                    Log.d(TAG, "BorderView добавлен в WindowManager (после пересоздания).");
+                } catch (Exception e) {
+                    Log.e(TAG, "Ошибка при повторном добавлении BorderView в WindowManager", e);
+                }
+            } else {
+                Log.d(TAG, "BorderView уже был добавлен, цвет обновлен.");
+            }
+            return;
+        }
+
+        // Проверяем разрешение перед созданием (хотя лучше это делать до вызова команды сервису)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            Log.e(TAG, "Нет разрешения на рисование поверх других окон. Рамка не будет показана.");
+            // Можно отправить Toast или уведомление, но из сервиса это сложнее.
+            return;
+        }
+
+        borderView = new BorderView(this);
+        borderView.setBorderColor(color);
+        // Устанавливаем толщину рамки. Вы можете сделать это настраиваемым.
+        float borderWidthDp = 5f; // Толщина в dp
+        float borderWidthPx = borderWidthDp * getResources().getDisplayMetrics().density;
+        borderView.setBorderWidth(borderWidthPx);
+
+
+        int layoutParamsType;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            layoutParamsType = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
+        } else {
+            layoutParamsType = WindowManager.LayoutParams.TYPE_PHONE; // Или TYPE_SYSTEM_ALERT для старых версий
+        }
+
+        borderViewParams = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                layoutParamsType,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+
+        try {
+            windowManager.addView(borderView, borderViewParams);
+            Log.d(TAG, "BorderView добавлен в WindowManager.");
+        } catch (Exception e) {
+            Log.e(TAG, "Ошибка при добавлении BorderView в WindowManager", e);
+            borderView = null; // Сбрасываем, если не удалось добавить
+        }
+    }
+
+    private void hideBorderView() {
+        if (borderView != null && borderView.getWindowToken() != null) {
+            try {
+                windowManager.removeView(borderView);
+                Log.d(TAG, "BorderView удален из WindowManager.");
+            } catch (Exception e) {
+                Log.e(TAG, "Ошибка при удалении BorderView из WindowManager", e);
+            }
+        }
+        borderView = null; // В любом случае обнуляем ссылку
+    }
+
+    private void updateBorderColor(int color) {
+        if (borderView != null && borderView.getWindowToken() != null) {
+            borderView.setBorderColor(color);
+            Log.d(TAG, "Цвет BorderView обновлен.");
+        } else if (borderView != null && borderView.getWindowToken() == null) {
+            // Если view есть, но не в окне (например, после ошибки добавления), попробуем показать заново
+            Log.d(TAG, "BorderView существует, но не в окне. Попытка показать с новым цветом.");
+            showBorderView(color);
+        } else {
+            Log.d(TAG, "Попытка обновить цвет, но BorderView не существует или не добавлен.");
+            // Можно решить, нужно ли создавать рамку, если ее нет, при попытке обновить цвет.
+            // showBorderView(color); // Показать с новым цветом, если ранее не было
+        }
+    }
+
+    public void onClientConnectedStateChanged(boolean isConnected) {
+        if (!isRunning.get()) return;
+
+        mainThreadHandler.post(() -> { // Отправляем задачу в UI поток
+            if (isConnected) {
+                Log.d(TAG, "UI Thread: Клиент подключился. Обновляем цвет рамки на красный.");
+                updateBorderColor(Color.RED);
+            } else {
+                Log.d(TAG, "UI Thread: Клиент отключился. Обновляем цвет рамки на зеленый.");
+                updateBorderColor(Color.GREEN);
+            }
+        });
+    }
+
     @RequiresApi(Build.VERSION_CODES.O)
     public static Notification getNotification(final Context context, String contentText) {
         String NOTIFICATION_CHANNEL_ID = "osp.moon.clonescreen";

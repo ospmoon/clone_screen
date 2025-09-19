@@ -23,7 +23,7 @@ import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import osp.moon.clonescreen.AutoFitSurfaceView;
+import osp.moon.clonescreen.customviews.AutoFitSurfaceView;
 import osp.moon.clonescreen.R;
 
 public class ClientFragment extends Fragment implements SurfaceHolder.Callback {

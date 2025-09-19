@@ -20,9 +20,13 @@ public class TcpServer extends Thread {
 
     private final Object clientConnectionLock = new Object();
     private volatile boolean isClientConnected = false;
-
+    private final ScreenCaptureService serviceCallback;
     public boolean isClientConnected() {
         return isClientConnected;
+    }
+
+    public TcpServer(ScreenCaptureService callback) { // Конструктор
+        this.serviceCallback = callback;
     }
 
     @Override
@@ -36,7 +40,9 @@ public class TcpServer extends Thread {
                 try {
                     clientSocket = serverSocket.accept();
                     Log.i(TAG, "run: КЛИЕНТ ПОДКЛЮЧЕН: " + clientSocket.getInetAddress());
-
+                    if (serviceCallback != null) {
+                        serviceCallback.onClientConnectedStateChanged(true);
+                    }
                     outputStream = clientSocket.getOutputStream();
 
                     synchronized (clientConnectionLock) {
@@ -63,6 +69,9 @@ public class TcpServer extends Thread {
                 } finally {
                     Log.d(TAG, "run: Блок finally. Закрываем ресурсы текущего клиента.");
                     closeClientResources();
+                    if (serviceCallback != null) {
+                        serviceCallback.onClientConnectedStateChanged(false);
+                    }
                 }
             }
         } catch (Exception e) {

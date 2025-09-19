@@ -1,10 +1,9 @@
-package osp.moon.clonescreen;
+package osp.moon.clonescreen.customviews;
 
 import android.content.Context;
 import android.util.AttributeSet;
 import android.view.SurfaceView;
 import android.view.View;
-import android.view.ViewGroup;
 
 public class AutoFitSurfaceView extends SurfaceView {
     private int ratioWidth = 0;

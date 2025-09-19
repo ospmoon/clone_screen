@@ -7,7 +7,7 @@
     tools:context=".ClientActivity">
 
     <!-- Наш SurfaceView, который будет центрирован внутри FrameLayout -->
-    <osp.moon.clonescreen.AutoFitSurfaceView
+    <osp.moon.clonescreen.customviews.AutoFitSurfaceView
         android:id="@+id/client_surface_view"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

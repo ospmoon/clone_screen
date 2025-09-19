@@ -14,6 +14,11 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.graphics.PixelFormat;
+import android.net.Uri;
+import android.os.Build;
+import android.provider.Settings;
+import android.view.WindowManager;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
@@ -29,6 +34,7 @@ import osp.moon.clonescreen.services.ScreenCaptureService;
 public class ServerFragment extends Fragment {
 
     private final String TAG = ServerFragment.class.getName();
+    private static final int REQUEST_CODE_DRAW_OVERLAY_PERMISSION = 1234;
 
     private MediaProjectionManager mMediaProjectionManager;
     private final ActivityResultLauncher<Intent> mMediaProjectionLauncher = registerForActivityResult(
@@ -67,17 +73,80 @@ public class ServerFragment extends Fragment {
         Button startButton = root.findViewById(R.id.start_button);
         startButton.setOnClickListener(v -> {
             Log.d(TAG, "Кнопка 'Начать трансляцию' нажата.");
-            AppHelper.prepareCaptureService(requireActivity());
-            Log.d(TAG, "Запрашиваем разрешение на захват экрана...");
-            mMediaProjectionLauncher.launch(mMediaProjectionManager.createScreenCaptureIntent());
+            if (checkDrawOverlayPermission()) {
+                Log.d(TAG, "Разрешение на рисование поверх других окон есть.");
+                // Теперь можно запустить сервис и сказать ему показать рамку
+                AppHelper.prepareCaptureService(requireActivity()); // Это запускает сервис в foreground
+                sendOverlayCommandToService(ScreenCaptureService.ACTION_SHOW_BORDER_GREEN); // Новая команда
+                // Остальная логика запуска проекции
+                if (mMediaProjectionManager != null) {
+                    mMediaProjectionLauncher.launch(mMediaProjectionManager.createScreenCaptureIntent());
+                } else {
+                    Log.e(TAG, "mMediaProjectionManager is null, cannot launch screen capture intent.");
+                    Toast.makeText(requireActivity(), "Ошибка: MediaProjectionManager не инициализирован.", Toast.LENGTH_SHORT).show();
+                    sendOverlayCommandToService(ScreenCaptureService.ACTION_HIDE_BORDER); // Скрываем, если ошибка
+                }
+            } else {
+                Log.d(TAG, "Разрешения на рисование поверх других окон нет. Запрашиваем.");
+                requestDrawOverlayPermission();
+            }
         });
 
         Button stopButton = root.findViewById(R.id.stop_button);
         stopButton.setOnClickListener(v -> {
             Log.d(TAG, "Кнопка 'Завершить трансляцию' нажата.");
             AppHelper.stopCaptureService(requireActivity());
+            sendOverlayCommandToService(ScreenCaptureService.ACTION_HIDE_BORDER); // Команда сервису убрать рамку
         });
         return root;
+    }
+
+    private boolean checkDrawOverlayPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            return Settings.canDrawOverlays(requireContext());
+        }
+        return true; // На версиях до M разрешение дается при установке
+    }
+
+    private void requestDrawOverlayPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + requireActivity().getPackageName()));
+            // Вместо startActivityForResult, который устарел, лучше использовать новый ActivityResultLauncher,
+            // но для простоты этого примера, если вы уже используете mMediaProjectionLauncher,
+            // можно запустить так, но результат нужно будет проверять в onResume или другом колбэке.
+            // Для этого конкретного разрешения обычно достаточно просто открыть настройки.
+            startActivityForResult(intent, REQUEST_CODE_DRAW_OVERLAY_PERMISSION);
+            Toast.makeText(requireContext(), "Пожалуйста, предоставьте разрешение на рисование поверх других окон", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @Override
+    public void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE_DRAW_OVERLAY_PERMISSION) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                if (Settings.canDrawOverlays(requireContext())) {
+                    Log.d(TAG, "Разрешение на рисование поверх других окон ПОЛУЧЕНО после запроса.");
+                    // Можно автоматически нажать "старт" или просто уведомить пользователя, что теперь можно.
+                    // Для простоты, пользователь должен будет нажать "старт" снова.
+                    Toast.makeText(requireContext(), "Разрешение получено. Нажмите 'Начать трансляцию' еще раз.", Toast.LENGTH_LONG).show();
+                } else {
+                    Log.w(TAG, "Разрешение на рисование поверх других окон ОТКЛОНЕНО после запроса.");
+                    Toast.makeText(requireContext(), "Разрешение не предоставлено. Рамка не будет отображаться.", Toast.LENGTH_LONG).show();
+                }
+            }
+        }
+        // Не забываем обработку для mMediaProjectionLauncher
+        // Это место немного усложняется, если уже есть registerForActivityResult.
+        // Возможно, для REQUEST_CODE_DRAW_OVERLAY_PERMISSION не нужно ждать результата,
+        // а просто проверять разрешение при следующей попытке старта.
+    }
+
+    private void sendOverlayCommandToService(String action) {
+        Intent intent = new Intent(requireContext(), ScreenCaptureService.class);
+        intent.setAction(action);
+        requireContext().startService(intent);
     }
 
     private void getProjectionAndStartService(final Context context, int code, Intent data) {
