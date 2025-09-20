@@ -8,6 +8,12 @@
     <string name="wifi_off_message">Wi-Fi is off</string>
     <string name="ip_not_found_message">IP not found</string>
     <string name="service_not_available_message">Screen capture service not available.</string>
+    <string name="failed_create_server_error_message">Failed to create ServerSocket</string>
+    <string name="waiting_connection_error_message">An error occurs when waiting for a connection</string>
+    <string name="permission_not_granted_toast_message">Permission to capture screen was not granted.</string>
+    <string name="mMediaProjectionManager_not_initialized_toast_message">Error: MediaProjectionManager not initialized.</string>
+    <string name="please_grant_overlay_permission_toast_message">Please grant permission to draw on top of other windows</string>
+    <string name="failed_start_screen_capture_toast_message">Error: Failed to start screen capture</string>
 
     <string name="client_title">Client</string>
     <string name="ip_server_hint">Server IP address</string>

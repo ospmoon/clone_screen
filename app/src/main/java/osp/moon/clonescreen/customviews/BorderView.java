@@ -14,15 +14,13 @@ import androidx.annotation.Nullable;
 public class BorderView extends View {
     private Paint borderPaint;
     private RectF borderRect;
-    private float borderWidthPx = 10f; // Толщина рамки в пикселях
+    private float borderWidthPx = 5f;
 
     public BorderView(Context context) {
         super(context);
         init();
     }
 
-    // Конструкторы AttributeSet могут не понадобиться, если мы создаем View программно,
-    // но лучше их оставить для гибкости.
     public BorderView(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
         init();

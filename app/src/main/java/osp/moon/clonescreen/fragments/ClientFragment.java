@@ -1,5 +1,7 @@
 package osp.moon.clonescreen.fragments;
 
+import static osp.moon.clonescreen.services.MySocketServer.SERVER_PORT;
+
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Bundle;
@@ -31,7 +33,6 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
     private static final String TAG = ClientFragment.class.getName();
 
     private static final String MIME_TYPE = MediaFormat.MIMETYPE_VIDEO_AVC;
-    private static final int PORT = 12345;
 
     private AutoFitSurfaceView surfaceView;
     private SurfaceHolder surfaceHolder;
@@ -115,7 +116,7 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
             try {
                 Log.d(TAG, "networkThread: Поток запущен. Входим в цикл переподключения.");
                 while (shouldBeConnecting.get() && !Thread.currentThread().isInterrupted()) {
-                    try (Socket socket = new Socket(masterIpAddress, PORT)) {
+                    try (Socket socket = new Socket(masterIpAddress, SERVER_PORT)) {
                         Log.i(TAG, "networkThread: УСПЕШНО ПОДКЛЮЧЕНО к " + masterIpAddress);
                         requireActivity().runOnUiThread(() -> Toast.makeText(requireActivity(), requireActivity().getString(R.string.connected_toast_message), Toast.LENGTH_SHORT).show());
 
