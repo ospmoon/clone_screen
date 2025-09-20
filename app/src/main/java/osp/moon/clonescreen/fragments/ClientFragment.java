@@ -34,7 +34,7 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
     private static final int PORT = 12345;
 
     private AutoFitSurfaceView surfaceView;
-    private Surface surface;
+    private SurfaceHolder surfaceHolder;
     private MediaCodec videoDecoder;
     private Thread networkThread;
     private EditText ipInput;
@@ -80,7 +80,7 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
     @Override
     public void surfaceCreated(@NonNull SurfaceHolder holder) {
         Log.d(TAG, "surfaceCreated: Surface создан и готов.");
-        surface = holder.getSurface();
+        this.surfaceHolder = holder; // Сохраняем holder
         if (shouldBeConnecting.get()) {
             Log.d(TAG, "surfaceCreated: Запускаем клиент, так как подключение уже было запрошено.");
             startClient();
@@ -90,6 +90,7 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
     @Override
     public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
         Log.d(TAG, "surfaceDestroyed: Surface уничтожен. Останавливаем клиент.");
+        this.surfaceHolder = null;
         stopClient();
     }
 
@@ -100,8 +101,8 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
 
     private void startClient() {
         Log.d(TAG, "startClient: Проверка условий для запуска.");
-        if (surface == null || !surface.isValid()) {
-            Log.w(TAG, "startClient: Surface не готов, запуск отложен.");
+        if (this.surfaceHolder == null || this.surfaceHolder.getSurface() == null || !this.surfaceHolder.getSurface().isValid()) {
+            Log.w(TAG, "startClient: SurfaceHolder или Surface не готовы, запуск отложен.");
             return;
         }
         if (networkThread != null && networkThread.isAlive()) {
@@ -111,66 +112,85 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
         Log.d(TAG, "startClient: Все условия выполнены, запускаем сетевой поток.");
 
         networkThread = new Thread(() -> {
-            Log.d(TAG, "networkThread: Поток запущен. Входим в цикл переподключения.");
-            while (shouldBeConnecting.get() && !Thread.currentThread().isInterrupted()) {
-                try (Socket socket = new Socket(masterIpAddress, PORT)) {
-                    Log.i(TAG, "networkThread: УСПЕШНО ПОДКЛЮЧЕНО к " + masterIpAddress);
-                    requireActivity().runOnUiThread(() -> Toast.makeText(requireActivity(), requireActivity().getString(R.string.connected_toast_message), Toast.LENGTH_SHORT).show());
+            try {
+                Log.d(TAG, "networkThread: Поток запущен. Входим в цикл переподключения.");
+                while (shouldBeConnecting.get() && !Thread.currentThread().isInterrupted()) {
+                    try (Socket socket = new Socket(masterIpAddress, PORT)) {
+                        Log.i(TAG, "networkThread: УСПЕШНО ПОДКЛЮЧЕНО к " + masterIpAddress);
+                        requireActivity().runOnUiThread(() -> Toast.makeText(requireActivity(), requireActivity().getString(R.string.connected_toast_message), Toast.LENGTH_SHORT).show());
 
-                    try (InputStream inputStream = socket.getInputStream()) {
-                        Log.d(TAG, "networkThread: Начинаем цикл чтения данных из сокета.");
-                        // Настраиваем декодер один раз с "заглушкой", реальный размер придет из потока.
-                        setupDecoder(1, 1);
+                        try (InputStream inputStream = socket.getInputStream()) {
+                            Log.d(TAG, "networkThread: Начинаем цикл чтения данных из сокета.");
+                            // Настраиваем декодер один раз с "заглушкой", реальный размер придет из потока.
+                            setupDecoder(1, 1);
 
-                        while (shouldBeConnecting.get() && !Thread.currentThread().isInterrupted()) {
-                            int packetType = inputStream.read();
-                            if (packetType == -1) {
-                                throw new IOException("Сервер корректно закрыл соединение (read returned -1)");
-                            }
-
-                            if (packetType == 2) {
-                                Log.i(TAG, "!!! networkThread: ПОЛУЧЕН ПАКЕТ ТИП 2 (Разрешение) !!!");
-                                byte[] widthBytes = readNBytes(inputStream, 4);
-                                byte[] heightBytes = readNBytes(inputStream, 4);
-                                int receivedWidth = ByteBuffer.wrap(widthBytes).asIntBuffer().get();
-                                int receivedHeight = ByteBuffer.wrap(heightBytes).asIntBuffer().get();
-                                Log.i(TAG, "networkThread: Новое разрешение от сервера: " + receivedWidth + "x" + receivedHeight);
-
-                                // Перенастраиваем декодер с новым разрешением
-                                setupDecoder(receivedWidth, receivedHeight);
-
-                            } else if (packetType == 0 || packetType == 1) {
-                                if (videoDecoder == null) {
-                                    Log.w(TAG, "networkThread: Получен пакет с видео, но декодер еще не готов. Пропускаем.");
-                                    continue;
+                            while (shouldBeConnecting.get() && !Thread.currentThread().isInterrupted()) {
+                                int packetType = inputStream.read();
+                                if (packetType == -1) {
+                                    throw new IOException("Сервер корректно закрыл соединение (read returned -1)");
                                 }
-                                byte[] sizeBuffer = readNBytes(inputStream, 4);
-                                int packetSize = ByteBuffer.wrap(sizeBuffer).asIntBuffer().get();
 
-                                if (packetSize <= 0 || packetSize > 2_000_000) throw new IOException("Неверный размер пакета: " + packetSize);
+                                if (packetType == 2) {
+                                    Log.i(TAG, "!!! networkThread: ПОЛУЧЕН ПАКЕТ ТИП 2 (Разрешение) !!!");
+                                    byte[] widthBytes = readNBytes(inputStream, 4);
+                                    byte[] heightBytes = readNBytes(inputStream, 4);
+                                    int receivedWidth = ByteBuffer.wrap(widthBytes).asIntBuffer().get();
+                                    int receivedHeight = ByteBuffer.wrap(heightBytes).asIntBuffer().get();
+                                    Log.i(TAG, "networkThread: Новое разрешение от сервера: " + receivedWidth + "x" + receivedHeight);
 
-                                byte[] packetBuffer = readNBytes(inputStream, packetSize);
-                                feedDecoder(packetBuffer, packetType == 0);
+                                    // Перенастраиваем декодер с новым разрешением
+                                    setupDecoder(receivedWidth, receivedHeight);
+
+                                } else if (packetType == 0 || packetType == 1) {
+                                    if (videoDecoder == null) {
+                                        Log.w(TAG, "networkThread: Получен пакет с видео, но декодер еще не готов. Пропускаем.");
+                                        continue;
+                                    }
+                                    byte[] sizeBuffer = readNBytes(inputStream, 4);
+                                    int packetSize = ByteBuffer.wrap(sizeBuffer).asIntBuffer().get();
+
+                                    if (packetSize <= 0 || packetSize > 2_000_000)
+                                        throw new IOException("Неверный размер пакета: " + packetSize);
+
+                                    byte[] packetBuffer = readNBytes(inputStream, packetSize);
+                                    feedDecoder(packetBuffer, packetType == 0);
+                                }
                             }
                         }
-                    }
-                } catch (Exception e) {
-                    if (shouldBeConnecting.get()) {
-                        Log.e(TAG, "networkThread: Ошибка в цикле подключения: " + e.getMessage());
-                        Log.w(TAG, "networkThread: Пауза 2 секунды перед переподключением...");
-                        requireActivity().runOnUiThread(() -> Toast.makeText(requireActivity(), requireActivity().getString(R.string.reconnecting_toast_message), Toast.LENGTH_SHORT).show());
-                        try { Thread.sleep(2000); } catch (InterruptedException interruptedException) {
-                            Log.w(TAG, "networkThread: Поток прерван во время паузы.");
-                            Thread.currentThread().interrupt();
-                        }
+                    } catch (Exception e) {
+
+                            Log.e(TAG, "networkThread: Ошибка в цикле подключения: " + e.getMessage());
+                            Log.w(TAG, "networkThread: Пауза 2 секунды перед переподключением...");
+                            requireActivity().runOnUiThread(() -> Toast.makeText(requireActivity(), requireActivity().getString(R.string.reconnecting_toast_message), Toast.LENGTH_SHORT).show());
+                            try {
+                                Thread.sleep(2000);
+                            } catch (InterruptedException interruptedException) {
+                                Log.w(TAG, "networkThread: Поток прерван во время паузы.");
+                                Thread.currentThread().interrupt();
+                            }
+
                     }
                 }
+                Log.d(TAG, "networkThread: Вышли из основного цикла. Поток завершается.");
+                requireActivity().runOnUiThread(() -> {
+                    Log.d(TAG, "UI Thread: Показываем панель управления.");
+                    controlsContainer.setVisibility(View.VISIBLE);
+                });
+            } catch (Throwable t) { // Ловим ВСЕ, включая нативные ошибки, которые могут не быть Exception
+                Log.e(TAG, "networkThread: НЕОБРАБОТАННАЯ ОШИБКА Throwable в сетевом потоке!", t);
+            } finally {
+                Log.d(TAG, "networkThread: Вышли из основного цикла или поймали Throwable. Поток завершается.");
+                if (isAdded() && getActivity() != null) { // Проверяем, что фрагмент присоединен
+                    getActivity().runOnUiThread(() -> {
+                        Log.d(TAG, "UI Thread: Показываем панель управления из finally сетевого потока.");
+                        if (controlsContainer != null) {
+                            controlsContainer.setVisibility(View.VISIBLE);
+                        }
+                    });
+                } else {
+                    Log.w(TAG, "networkThread: Фрагмент не присоединен, UI не обновляем из finally.");
+                }
             }
-            Log.d(TAG, "networkThread: Вышли из основного цикла. Поток завершается.");
-            requireActivity().runOnUiThread(() -> {
-                Log.d(TAG, "UI Thread: Показываем панель управления.");
-                controlsContainer.setVisibility(View.VISIBLE);
-            });
         });
         networkThread.start();
     }
@@ -188,42 +208,88 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
 
     private void setupDecoder(int width, int height) {
         Log.d(TAG, "setupDecoder: Начало настройки/перенастройки декодера.");
+        Surface currentSurface = null;
+        if (this.surfaceHolder != null) {
+            currentSurface = this.surfaceHolder.getSurface();
+        }
+
+        if (currentSurface == null || !currentSurface.isValid()) {
+            Log.e(TAG, "setupDecoder: Surface не доступен или не валиден! Невозможно настроить декодер.");
+            // Если декодер уже был, его надо остановить и освободить
+            if (videoDecoder != null) {
+                try {
+                    videoDecoder.stop();
+                    videoDecoder.release();
+                } catch (Exception e) {
+                    Log.w(TAG, "setupDecoder: Ошибка при освобождении старого декодера из-за невалидного surface.", e);
+                }
+                videoDecoder = null;
+            }
+            return; // Выходим, если нет валидного surface
+        }
+
         try {
             if (videoDecoder != null) {
                 Log.d(TAG, "setupDecoder: Освобождаем старый декодер.");
                 videoDecoder.stop();
                 videoDecoder.release();
+                videoDecoder = null; // Явно обнуляем перед пересозданием
             }
-            Log.i(TAG, "setupDecoder: Настройка с разрешением: " + width + "x" + height);
+            Log.i(TAG, "setupDecoder: Настройка с разрешением: " + width + "x" + height + " на surface: " + currentSurface);
             MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, width, height);
             videoDecoder = MediaCodec.createDecoderByType(MIME_TYPE);
-            videoDecoder.configure(format, surface, null, 0);
+            videoDecoder.configure(format, currentSurface, null, 0); // Используем currentSurface
             videoDecoder.start();
             Log.i(TAG, "setupDecoder: Декодер успешно настроен и запущен.");
         } catch (Exception e) {
             Log.e(TAG, "setupDecoder: КРИТИЧЕСКАЯ ОШИБКА при настройке декодера.", e);
+            if (videoDecoder != null) { // Попытка очистки, если что-то пошло не так
+                try { videoDecoder.release(); } catch (Exception e2) { /* ignore */ }
+                videoDecoder = null;
+            }
         }
     }
 
+
     private void feedDecoder(byte[] data, boolean isConfig) {
-        if (videoDecoder == null) return;
+        if (!shouldBeConnecting.get() || videoDecoder == null) {
+            Log.w(TAG, "feedDecoder: Попытка работы с декодером, когда клиент остановлен или декодер null. Выход.");
+            return;
+        }
         try {
+            if (!shouldBeConnecting.get()) return;
             int inputBufferIndex = videoDecoder.dequeueInputBuffer(10000);
             if (inputBufferIndex >= 0) {
+                if (!shouldBeConnecting.get() || videoDecoder == null) { // videoDecoder может стать null если stopClient сработал
+                    Log.w(TAG, "feedDecoder: Декодер остановлен во время получения inputBufferIndex. Выход.");
+                    return;
+                }
                 ByteBuffer inputBuffer = videoDecoder.getInputBuffer(inputBufferIndex);
                 if (inputBuffer != null) {
                     inputBuffer.clear();
                     inputBuffer.put(data);
                     int flags = isConfig ? MediaCodec.BUFFER_FLAG_CODEC_CONFIG : 0;
+                    if (!shouldBeConnecting.get() || videoDecoder == null) {
+                        Log.w(TAG, "feedDecoder: Декодер остановлен перед queueInputBuffer. Выход.");
+                        // Возможно, стоит попытаться вернуть буфер, если он был взят
+                        // videoDecoder.queueInputBuffer(inputBufferIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM); // Пример
+                        return;
+                    }
                     videoDecoder.queueInputBuffer(inputBufferIndex, 0, data.length, System.nanoTime() / 1000, flags);
                 }
             }
 
+            if (!shouldBeConnecting.get() || videoDecoder == null) {
+                Log.w(TAG, "feedDecoder: Декодер остановлен перед dequeueOutputBuffer. Выход.");
+                return;
+            }
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
             int outputBufferIndex = videoDecoder.dequeueOutputBuffer(bufferInfo, 0);
 
             while (outputBufferIndex >= 0) {
+                if (!shouldBeConnecting.get() || videoDecoder == null) break;
                 videoDecoder.releaseOutputBuffer(outputBufferIndex, true);
+                if (!shouldBeConnecting.get() || videoDecoder == null) break;
                 outputBufferIndex = videoDecoder.dequeueOutputBuffer(bufferInfo, 0);
             }
 
@@ -241,7 +307,11 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
                 });
             }
         } catch (Exception e) {
-            Log.e(TAG, "feedDecoder: Ошибка при работе с декодером.", e);
+            if (shouldBeConnecting.get()) {
+                Log.e(TAG, "feedDecoder: Общая ошибка при работе с декодером.", e);
+            } else {
+                Log.w(TAG, "feedDecoder: Перехвачена общая ошибка во время остановки клиента.", e);
+            }
         }
     }
 
@@ -250,7 +320,14 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
         shouldBeConnecting.set(false);
         if (networkThread != null) {
             Log.d(TAG, "stopClient: Прерываем сетевой поток.");
-            networkThread.interrupt();
+            networkThread.interrupt(); // Прерываем поток
+            try {
+                networkThread.join(500); // Даем потоку немного времени на завершение
+                Log.d(TAG, "stopClient: NetworkThread joined or timed out.");
+            } catch (Exception e) {
+                Log.w(TAG, "stopClient: Прерывание во время ожидания завершения networkThread.");
+                Thread.currentThread().interrupt(); // Восстанавливаем флаг прерывания
+            }
             networkThread = null;
         }
         if (videoDecoder != null) {
