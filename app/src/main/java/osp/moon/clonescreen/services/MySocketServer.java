@@ -40,7 +40,7 @@ public class MySocketServer {
         this.mCallback = callback;
     }
 
-    public boolean start() {
+    public boolean startAndWaitClient() {
         Log.d(TAG, "run(): port: " + SERVER_PORT);
         if (!createServer()) {
             stop(mContext.get().getString(R.string.failed_create_server_error_message));

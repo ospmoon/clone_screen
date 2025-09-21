@@ -180,52 +180,55 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
 
     private void startCapture() {
         Log.i(TAG, "startCapture()");
-
+        showBorderView(Color.GREEN);
         mWorkerThread = new Thread(() -> {
             Log.d(TAG, "workerThread: Поток запущен.");
             try {
                 isRunning.set(true);
                 Log.d(TAG, "workerThread: Ожидаем первого подключения клиента...");
-                if (mSocketServer.start()) {
-                    reconfigureEncoder();
-                    drainEncoder();
+                if (mSocketServer.startAndWaitClient()) {
+                    showBorderView(Color.RED);
+                    if (reconfigureEncoder()) {
+                        mainLoop();
+                    } else {
+                        stopCaptureAndSelf();
+                    }
                 }
-            } catch (Exception e) { // Ловим все ошибки, чтобы записать в лог
+            } catch (Exception e) {
                 Log.e(TAG, "workerThread: КРИТИЧЕСКАЯ ошибка в потоке workerThread.", e);
                 Thread.currentThread().interrupt();
             } finally {
                 Log.i(TAG, "workerThread: Поток workerThread завершает работу. isRunning=" + isRunning.get());
-                // Если поток завершился, но сервис еще "думает", что работает (например, из-за необработанного исключения выше),
-                // инициируем полную остановку, чтобы освободить ресурсы.
-                if (isRunning.get()) {
-                    Log.w(TAG, "workerThread: Поток завершился неожиданно, но isRunning все еще true. Инициируем stopCaptureAndSelf.");
-                    stopCaptureAndSelf();
-                }
+                stopCaptureAndSelf();
             }
         });
         mWorkerThread.setName("ScreenCaptureWorker");
         mWorkerThread.start();
     }
 
-    private void reconfigureEncoder() throws IOException {
+    private boolean reconfigureEncoder() {
         Log.i(TAG, "reconfigureEncoder()");
+        MediaFormat format;
+        try {
+            WindowManager wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+            DisplayMetrics metrics = new DisplayMetrics();
+            wm.getDefaultDisplay().getRealMetrics(metrics);
+            mScreenWidth = metrics.widthPixels;
+            mScreenHeight = metrics.heightPixels;
+            mScreenDpi = metrics.densityDpi;
+            Log.i(TAG, "reconfigureEncoder: размеры экрана: " + mScreenWidth + "x" + mScreenHeight);
+            mSocketServer.sendResolution(mScreenWidth, mScreenHeight);
 
-        WindowManager wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
-        if (wm == null) { Log.e(TAG, "reconfigureEncoder: WindowManager is null!"); throw new IOException("WindowManager is null"); }
-        DisplayMetrics metrics = new DisplayMetrics();
-        wm.getDefaultDisplay().getRealMetrics(metrics);
-        mScreenWidth = metrics.widthPixels;
-        mScreenHeight = metrics.heightPixels;
-        mScreenDpi = metrics.densityDpi;
-        Log.i(TAG, "reconfigureEncoder: размеры экрана: " + mScreenWidth + "x" + mScreenHeight);
-        mSocketServer.sendResolution(mScreenWidth, mScreenHeight);
-
-        Log.d(TAG, "reconfigureEncoder: Создаем НОВЫЙ кодек.");
-        MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, mScreenWidth, mScreenHeight);
-        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-        format.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE);
-        format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
-        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL);
+            Log.d(TAG, "reconfigureEncoder: Создаем НОВЫЙ кодек.");
+            format = MediaFormat.createVideoFormat(MIME_TYPE, mScreenWidth, mScreenHeight);
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+            format.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE);
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL);
+        } catch (Exception e) {
+            Log.e(TAG, "reconfigureEncoder: Общая ошибка при создании MediaFormat.", e);
+            return false;
+        }
 
         try {
             mVideoEncoder = MediaCodec.createEncoderByType(MIME_TYPE);
@@ -233,11 +236,11 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
             mInputSurface = mVideoEncoder.createInputSurface();
             mVideoEncoder.start();
             Log.d(TAG, "reconfigureEncoder: Новый кодек настроен и запущен. InputSurface создан.");
-        } catch (Exception e_codec) {
-            Log.e(TAG, "reconfigureEncoder: КРИТИЧЕСКАЯ ОШИБКА при создании/настройке кодека.", e_codec);
+        } catch (Exception e) {
+            Log.e(TAG, "reconfigureEncoder: КРИТИЧЕСКАЯ ОШИБКА при создании/настройке кодека.", e);
             if (mVideoEncoder != null) { mVideoEncoder.release(); mVideoEncoder = null; }
             if (mInputSurface != null) { mInputSurface.release(); mInputSurface = null; }
-            throw new IOException("Failed to create/configure MediaCodec", e_codec); // Перебрасываем, чтобы прервать
+            return false;
         }
 
         try {
@@ -248,13 +251,14 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
             Log.i(TAG, "reconfigureEncoder: VirtualDisplay создан.");
         } catch (Exception e) {
             Log.e(TAG, "reconfigureEncoder: Общая ошибка при создании VirtualDisplay.", e);
-            if (isRunning.get()) stopCaptureAndSelf();
-            throw new IOException("Failed to create VirtualDisplay", e);
+            stopCaptureAndSelf();
+            return false;
         }
         Log.i(TAG, "reconfigureEncoder: ЗАВЕРШЕНИЕ.");
+        return true;
     }
 
-    private void drainEncoder() {
+    private void mainLoop() {
         Log.d(TAG, "drainEncoder()");
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
         while (isRunning.get() && !Thread.currentThread().isInterrupted()) {
@@ -298,7 +302,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
                     if (outputBuffer == null) {
                         Log.e(TAG, "drainEncoder: videoEncoder.getOutputBuffer(" + outputBufferIndex + ") вернул null!");
                     } else {
-                        if (bufferInfo.size > 0) { // Отправляем, только если есть данные
+                        if (bufferInfo.size > 0) {
                             if (mSocketServer != null && mSocketServer.isClientConnected()) {
                                 byte[] data = new byte[bufferInfo.size];
                                 outputBuffer.get(data, bufferInfo.offset, bufferInfo.size);
