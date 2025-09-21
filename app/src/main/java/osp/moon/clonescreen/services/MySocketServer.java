@@ -143,7 +143,7 @@ public class MySocketServer {
         }
         try {
             int packetType = isConfig ? 0 : 1;
-            Log.i(TAG, " TcpServer.sendData: ПОПЫТКА ЗАПИСИ. Тип: " + packetType + ", Размер: " + data.length + ", Thread: " + Thread.currentThread().getName());
+            //Log.i(TAG, " TcpServer.sendData: ПОПЫТКА ЗАПИСИ. Тип: " + packetType + ", Размер: " + data.length + ", Thread: " + Thread.currentThread().getName());
             mOutputStream.write(packetType);
             mOutputStream.write(ByteBuffer.allocate(4).putInt(data.length).array());
             mOutputStream.write(data);

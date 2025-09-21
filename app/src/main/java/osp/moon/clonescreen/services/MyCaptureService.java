@@ -22,7 +22,6 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Surface;
@@ -32,7 +31,6 @@ import android.widget.Toast;
 import androidx.annotation.Nullable;
 import androidx.core.content.ContextCompat;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -47,8 +45,6 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
     public static final String ACTION_PREPARE = "osp.moon.clonescreen.ACTION_PREPARE";
     public static final String ACTION_START = "osp.moon.clonescreen.ACTION_START";
     public static final String ACTION_STOP = "osp.moon.clonescreen.ACTION_STOP";
-    public static final String ACTION_SHOW_BORDER_GREEN = "osp.moon.clonescreen.ACTION_SHOW_BORDER_GREEN";
-    public static final String ACTION_HIDE_BORDER = "osp.moon.clonescreen.ACTION_HIDE_BORDER";
     public static final String RESULT_CODE = "osp.moon.clonescreen.RESULT_CODE";
     public static final String RESULT_DATA = "osp.moon.clonescreen.RESULT_DATA";
 
@@ -120,11 +116,9 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
             return START_NOT_STICKY;
         }
         String action = intent.getAction();
-        Log.i(TAG, "onStartCommand: Получена команда: " + action);
+        Log.i(TAG, "onStartCommand: " + action);
 
         switch (action) {
-            case ACTION_PREPARE:
-                break;
             case ACTION_START:
                 int resultCode = intent.getIntExtra(RESULT_CODE, -999);
                 Intent resultData = intent.getParcelableExtra(RESULT_DATA);
@@ -138,12 +132,12 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
                     mMediaProjectioCallback = new MediaProjection.Callback() {
                         @Override
                         public void onStop() {
-                            Log.e(TAG, "!!! MediaProjection.onStop() был вызван системой! Остановка захвата. !!!");
+                            Log.e(TAG, "!!! mMediaProjectioCallback.onStop() !!!");
                             stopCaptureAndSelf();
                         }
                     };
                     mMediaProjection.registerCallback(mMediaProjectioCallback, mHandler);
-                    Log.d(TAG, "workerThread: MediaProjection.Callback зарегистрирован.");
+
                     startCapture();
                 } else  {
                     Log.e(TAG, "onStartCommand: Не удалось получить MediaProjection из данных Intent (mediaProjectionManager.getMediaProjection вернул null).");
@@ -152,16 +146,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
                 }
                 break;
             case ACTION_STOP:
-                Log.d(TAG, "onStartCommand: Обработка ACTION_STOP.");
                 stopCaptureAndSelf();
-                break;
-            case ACTION_SHOW_BORDER_GREEN:
-                Log.d(TAG, "onStartCommand: Обработка ACTION_SHOW_BORDER_GREEN.");
-                showBorderView(Color.GREEN);
-                break;
-            case ACTION_HIDE_BORDER:
-                Log.d(TAG, "onStartCommand: Обработка ACTION_HIDE_BORDER.");
-                hideBorderView();
                 break;
         }
         return START_NOT_STICKY;
@@ -180,14 +165,12 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
 
     private void startCapture() {
         Log.i(TAG, "startCapture()");
-        showBorderView(Color.GREEN);
         mWorkerThread = new Thread(() -> {
             Log.d(TAG, "workerThread: Поток запущен.");
             try {
                 isRunning.set(true);
                 Log.d(TAG, "workerThread: Ожидаем первого подключения клиента...");
                 if (mSocketServer.startAndWaitClient()) {
-                    showBorderView(Color.RED);
                     if (reconfigureEncoder()) {
                         mainLoop();
                     } else {
@@ -408,20 +391,24 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
     @Override
     public void onStarted() {
         Log.d(TAG, "callback onStarted()");
+        showBorderView(Color.GREEN);
     }
 
     @Override
     public void onStoped(String reason) {
         Log.d(TAG, "callback onStoped()");
+
     }
 
     @Override
     public void onClientConnected() {
         Log.d(TAG, "callback onClientConnected()");
+        showBorderView(Color.RED);
     }
 
     @Override
     public void onClientDisconnected() {
         Log.d(TAG, "callback onClientDisconnected()");
+        showBorderView(Color.GREEN);
     }
 }

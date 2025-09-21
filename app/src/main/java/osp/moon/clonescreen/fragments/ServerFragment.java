@@ -73,8 +73,6 @@ public class ServerFragment extends Fragment {
         Button startButton = root.findViewById(R.id.start_button);
         startButton.setOnClickListener(v -> {
             if (AppHelper.checkDrawOverlayPermission(requireActivity())) {
-                AppHelper.prepareCaptureService(requireActivity());
-
                 if (mMediaProjectionManager != null) {
                     mMediaProjectionLauncher.launch(mMediaProjectionManager.createScreenCaptureIntent());
                 } else {
