@@ -160,6 +160,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
         super.onDestroy();
         Log.d(TAG, "onDestroy()");
         //stopCaptureAndSelf();
+        hideBorderView();
     }
 
     private void startWaitingClientThread() {
