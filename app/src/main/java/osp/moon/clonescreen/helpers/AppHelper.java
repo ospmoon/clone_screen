@@ -34,21 +34,8 @@ public class AppHelper {
         return true;
     }
 
-    public static void sendOverlayCommandToService(final Context context, String action) {
-        Intent serviceIntent = new Intent(context, MyCaptureService.class);
-        serviceIntent.setAction(action);
-        ContextCompat.startForegroundService(context, serviceIntent);
-    }
-
-    public static void prepareCaptureService(final Context context) {
-        Log.d(TAG, "Сервис запущен с ACTION_PREPARE.");
-        Intent serviceIntent = new Intent(context, MyCaptureService.class);
-        serviceIntent.setAction(MyCaptureService.ACTION_PREPARE);
-        ContextCompat.startForegroundService(context, serviceIntent);
-    }
-
     public static void startCaptureService(final Context context, int resultCode, Intent resultData) {
-        Log.d(TAG, "Сервис запущен с ACTION_START.");
+        Log.d(TAG, "startCaptureService ACTION_START.");
         Intent serviceIntent = new Intent(context, MyCaptureService.class);
         serviceIntent.setAction(MyCaptureService.ACTION_START);
         serviceIntent.putExtra(MyCaptureService.RESULT_CODE, resultCode);
@@ -57,7 +44,7 @@ public class AppHelper {
     }
 
     public static void stopCaptureService(final Context context) {
-        Log.d(TAG, "Сервис остановлен с ACTION_STOP.");
+        Log.d(TAG, "startCaptureService ACTION_STOP.");
         Intent serviceIntent = new Intent(context, MyCaptureService.class);
         serviceIntent.setAction(MyCaptureService.ACTION_STOP);
         ContextCompat.startForegroundService(context, serviceIntent);
@@ -75,20 +62,18 @@ public class AppHelper {
                 if (intf.getName().contains("wlan") || intf.getName().contains("ap")) {
                     for (java.util.Enumeration<java.net.InetAddress> enumIpAddr = intf.getInetAddresses(); enumIpAddr.hasMoreElements();) {
                         java.net.InetAddress inetAddress = enumIpAddr.nextElement();
-                        // Ищем IPv4 адрес, который не является loopback
                         if (!inetAddress.isLoopbackAddress() && inetAddress instanceof java.net.Inet4Address) {
-                            Log.d(TAG, "Найден IP адрес точки доступа: " + inetAddress.getHostAddress());
+                            Log.d(TAG, "Found (Hotspot) IP: " + inetAddress.getHostAddress());
                             return inetAddress.getHostAddress();
                         }
                     }
                 }
             }
-        } catch (java.net.SocketException ex) {
-            Log.e(TAG, "Ошибка при получении IP адреса точки доступа", ex);
+        } catch (Exception e) {
+            Log.e(TAG, "getIpAddress() Exception1", e);
         }
 
-        // Если в режиме точки доступа найти не удалось, пробуем старый способ (режим клиента Wi-Fi)
-        Log.d(TAG, "IP точки доступа не найден, ищем IP в обычной Wi-Fi сети...");
+        Log.d(TAG, "The access point's IP address was not found. We're looking for the IP address on a regular Wi-Fi network...");
         WifiManager wifiManager = (WifiManager) context.getApplicationContext().getSystemService(WIFI_SERVICE);
         if (wifiManager != null) {
             if (!wifiManager.isWifiEnabled()) {
@@ -100,7 +85,7 @@ public class AppHelper {
             if (ip != 0) {
                 String ipAddress = String.format(Locale.getDefault(), "%d.%d.%d.%d",
                         (ip & 0xff), (ip >> 8 & 0xff), (ip >> 16 & 0xff), (ip >> 24 & 0xff));
-                Log.d(TAG, "Найден IP адрес в Wi-Fi сети: " + ipAddress);
+                Log.d(TAG, "IP address found on Wi-Fi network:" + ipAddress);
                 return ipAddress;
             }
         }

@@ -65,9 +65,9 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
     private Handler mHandler;
     private MediaProjectionManager mProjectionManager;
     private MediaProjection mMediaProjection;
-    MediaProjection.Callback mMediaProjectioCallback;
+    MediaProjection.Callback mMediaProjectionCallback;
     private Thread mWorkerThread;
-    private final AtomicBoolean isRunning = new AtomicBoolean(false);
+    //private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private MySocketServer mSocketServer;
 
 
@@ -126,21 +126,20 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
                     stopCaptureAndSelf();
                     break;
                 }
-
                 mMediaProjection = mProjectionManager.getMediaProjection(resultCode, resultData);
                 if (mMediaProjection != null) {
-                    mMediaProjectioCallback = new MediaProjection.Callback() {
+                    mMediaProjectionCallback = new MediaProjection.Callback() {
                         @Override
                         public void onStop() {
-                            Log.e(TAG, "!!! mMediaProjectioCallback.onStop() !!!");
+                            Log.e(TAG, "!!! mMediaProjectionCallback.onStop() !!!");
                             stopCaptureAndSelf();
                         }
                     };
-                    mMediaProjection.registerCallback(mMediaProjectioCallback, mHandler);
+                    mMediaProjection.registerCallback(mMediaProjectionCallback, mHandler);
 
-                    startCapture();
+                    startWaitingClientThread();
                 } else  {
-                    Log.e(TAG, "onStartCommand: Не удалось получить MediaProjection из данных Intent (mediaProjectionManager.getMediaProjection вернул null).");
+                    Log.e(TAG, "onStartCommand: mMediaProjection != null");
                     Toast.makeText(this, getString(R.string.failed_start_screen_capture_toast_message), Toast.LENGTH_LONG).show();
                     stopCaptureAndSelf();
                 }
@@ -160,28 +159,38 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
     public void onDestroy() {
         super.onDestroy();
         Log.d(TAG, "onDestroy()");
-        stopCaptureAndSelf();
+        //stopCaptureAndSelf();
+    }
+
+    private void startWaitingClientThread() {
+        Log.i(TAG, "startWaitingClientThread()");
+        Thread thread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (mSocketServer != null) mSocketServer.startAndWaitClient();
+                } catch (Exception e) {
+                    Log.e(TAG, "startWaitingClientThread: Exception", e);
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        thread.start();
     }
 
     private void startCapture() {
         Log.i(TAG, "startCapture()");
         mWorkerThread = new Thread(() -> {
-            Log.d(TAG, "workerThread: Поток запущен.");
             try {
-                isRunning.set(true);
-                Log.d(TAG, "workerThread: Ожидаем первого подключения клиента...");
-                if (mSocketServer.startAndWaitClient()) {
-                    if (reconfigureEncoder()) {
-                        mainLoop();
-                    } else {
-                        stopCaptureAndSelf();
-                    }
+                if (reconfigureEncoder()) {
+                    mainLoop();
+                } else {
+                    stopCaptureAndSelf();
                 }
             } catch (Exception e) {
-                Log.e(TAG, "workerThread: КРИТИЧЕСКАЯ ошибка в потоке workerThread.", e);
+                Log.e(TAG, "workerThread: Exception1", e);
                 Thread.currentThread().interrupt();
             } finally {
-                Log.i(TAG, "workerThread: Поток workerThread завершает работу. isRunning=" + isRunning.get());
                 stopCaptureAndSelf();
             }
         });
@@ -242,42 +251,35 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
     }
 
     private void mainLoop() {
-        Log.d(TAG, "drainEncoder()");
+        Log.d(TAG, "mainLoop()");
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
-        while (isRunning.get() && !Thread.currentThread().isInterrupted()) {
-            if (mVideoEncoder == null || !isRunning.get()) {
-                Log.d(TAG, "drainEncoder: isRunning=false, выход из цикла.");
+        while (mSocketServer != null && mSocketServer.isClientConnected() && !Thread.currentThread().isInterrupted()) {
+            if (mVideoEncoder == null) {
+                Log.d(TAG, "mainLoop: mVideoEncoder == null. Exit");
                 break;
             }
             try {
                 int outputBufferIndex = mVideoEncoder.dequeueOutputBuffer(bufferInfo, 10000);
-
                 if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    Log.i(TAG, "drainEncoder: Формат кодировщика изменился.");
+                    Log.i(TAG, "mainLoop: INFO_OUTPUT_FORMAT_CHANGED.");
                     MediaFormat newFormat = mVideoEncoder.getOutputFormat();
-                    Log.d(TAG, "drainEncoder: Новый формат: " + newFormat);
                     ByteBuffer spsBuffer = newFormat.getByteBuffer("csd-0");
                     lastSps = null; lastPps = null;
                     if (spsBuffer != null) {
                         lastSps = new byte[spsBuffer.remaining()];
                         spsBuffer.get(lastSps);
                         spsBuffer.rewind();
-                        Log.d(TAG, "drainEncoder: SPS сохранен, " + lastSps.length + " bytes.");
-                    } else Log.w(TAG, "drainEncoder: spsBuffer is null в INFO_OUTPUT_FORMAT_CHANGED.");
-
+                    }
                     ByteBuffer ppsBuffer = newFormat.getByteBuffer("csd-1");
                     if (ppsBuffer != null) {
                         lastPps = new byte[ppsBuffer.remaining()];
-                        ppsBuffer.get(lastPps); ppsBuffer.rewind();
-                        Log.d(TAG, "drainEncoder: PPS сохранен, " + lastPps.length + " bytes.");
-                    } else Log.w(TAG, "drainEncoder: ppsBuffer is null в INFO_OUTPUT_FORMAT_CHANGED.");
+                        ppsBuffer.get(lastPps);
+                        ppsBuffer.rewind();
+                    }
 
                     if (mSocketServer != null && mSocketServer.isClientConnected() && lastSps != null && lastPps != null) {
-                        Log.i(TAG, "drainEncoder: Отправка SPS/PPS клиенту при INFO_OUTPUT_FORMAT_CHANGED.");
                         mSocketServer.sendData(lastSps, true);
                         mSocketServer.sendData(lastPps, true);
-                    } else {
-                        Log.w(TAG, "drainEncoder: Клиент не подключен или SPS/PPS отсутствуют, не отправляем при INFO_OUTPUT_FORMAT_CHANGED.");
                     }
 
                 } else if (outputBufferIndex >= 0) {
@@ -301,29 +303,25 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
             }
         } // end while
 
-        Log.i(TAG, "drainEncoder: Цикл извлечения данных завершен. isRunning=" + isRunning.get());
+        Log.i(TAG, "mainLoop----> EXIT");
     }
 
     private void stopCaptureAndSelf() {
         Log.i(TAG, "stopCaptureAndSelf()");
 
         if (mWorkerThread != null) {
-            Log.d(TAG, "stopCaptureAndSelf: Прерываем workerThread.");
             mWorkerThread.interrupt();
             try { mWorkerThread.join(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             mWorkerThread = null;
         }
 
         if (mSocketServer != null) {
-            Log.d(TAG, "stopCaptureAndSelf: Останавливаем TcpServer.");
             mSocketServer.stop("stopCaptureAndSelf()");
-            mSocketServer = null;
+            //mSocketServer = null;
         }
 
-        releaseEncoderAndProjection(); // Освобождаем кодек и проекцию
-
-        Log.i(TAG, "stopCaptureAndSelf: Остановка завершена, вызываем stopSelf().");
-        stopSelf(); // Останавливаем сам сервис
+        releaseEncoderAndProjection();
+        stopSelf();
     }
 
     private void releaseEncoderAndProjection() {
@@ -332,38 +330,33 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
             if (mVirtualDisplay != null) {
                 mVirtualDisplay.release();
                 mVirtualDisplay = null;
-                Log.d(TAG, "releaseEncoderAndProjection: VirtualDisplay освобожден.");
             }
             if (mInputSurface != null) {
                 mInputSurface.release();
                 mInputSurface = null;
-                Log.d(TAG, "releaseEncoderAndProjection: InputSurface освобожден.");
             }
             if (mVideoEncoder != null) {
                 try {
                     mVideoEncoder.stop();
-                } catch (IllegalStateException e) {
-                    Log.w(TAG, "releaseEncoderAndProjection: Ошибка при videoEncoder.stop() (возможно, уже остановлен).", e);
+                    mVideoEncoder.release();
+                    mVideoEncoder = null;
+                } catch (Exception e) {
+                    Log.w(TAG, "releaseEncoderAndProjection: Exception", e);
                 }
-                mVideoEncoder.release();
-                mVideoEncoder = null;
-                Log.d(TAG, "releaseEncoderAndProjection: VideoEncoder освобожден.");
             }
 
 
         if (mMediaProjection != null) {
-            Log.d(TAG, "releaseEncoderAndProjection: Остановка currentMediaProjectionInstance.");
-            if (mMediaProjectioCallback != null) {
+            if (mMediaProjectionCallback != null) {
                 try {
-                    mMediaProjection.unregisterCallback(mMediaProjectioCallback);
-                } catch (Exception e) { /* Игнорируем, если уже отписан или ошибка */ }
-                mMediaProjectioCallback = null;
+                    mMediaProjection.unregisterCallback(mMediaProjectionCallback);
+                } catch (Exception e) { /* ignore */ }
+                mMediaProjectionCallback = null;
             }
             try {
                 mMediaProjection.stop();
-            } catch (Exception e) { /* Игнорируем, если уже остановлен или ошибка */ }
+            } catch (Exception e) { /* ignore */ }
             mMediaProjection = null;
-            Log.d(TAG, "releaseEncoderAndProjection: currentMediaProjectionInstance обнулен.");
         }
     }
 
@@ -379,7 +372,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
     }
 
     private void hideBorderView() {
-        Log.d(TAG, "hideBorderView: Попытка скрыть рамку.");
+        Log.d(TAG, "hideBorderView()");
         mHandler.post(new Runnable() {
             @Override
             public void run() {
@@ -395,20 +388,22 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
     }
 
     @Override
-    public void onStoped(String reason) {
+    public void onStopped(String reason) {
         Log.d(TAG, "callback onStoped()");
-
     }
 
     @Override
     public void onClientConnected() {
         Log.d(TAG, "callback onClientConnected()");
         showBorderView(Color.RED);
+        startCapture();
     }
 
     @Override
     public void onClientDisconnected() {
         Log.d(TAG, "callback onClientDisconnected()");
         showBorderView(Color.GREEN);
+        //startWaitingClientThread();
+        stopSelf();
     }
 }

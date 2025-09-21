@@ -1,10 +1,11 @@
 package osp.moon.clonescreen.services;
 
-import android.app.Activity;
 import android.content.Context;
 import android.util.Log;
 
 import java.io.OutputStream;
+import java.net.BindException;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.ByteBuffer;
@@ -18,7 +19,7 @@ public class MySocketServer {
     private final String TAG = MySocketServer.class.getName();
     public static final int SERVER_PORT = 5000;
     private ServerSocket mServer;
-    private Socket mClient;
+    private Socket mClientSocket;
     private OutputStream mOutputStream;
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final AtomicReference<Context> mContext = new AtomicReference<>();
@@ -26,7 +27,7 @@ public class MySocketServer {
     private final ServerCallback mCallback;
     public interface ServerCallback {
         void onStarted();
-        void onStoped(String reason);
+        void onStopped(String reason);
         void onClientConnected();
         void onClientDisconnected();
     }
@@ -36,12 +37,13 @@ public class MySocketServer {
     }
 
     public MySocketServer(final Context context, final ServerCallback callback) {
+        Log.d(TAG, "MySocketServer() constructor");
         this.mContext.set(context);
         this.mCallback = callback;
     }
 
-    public boolean startAndWaitClient() {
-        Log.d(TAG, "run(): port: " + SERVER_PORT);
+    public boolean startAndWaitClient() throws InterruptedException {
+        Log.d(TAG, "startAndWaitClient()");
         if (!createServer()) {
             stop(mContext.get().getString(R.string.failed_create_server_error_message));
             return false;
@@ -64,34 +66,25 @@ public class MySocketServer {
         if (mCallback != null) mCallback.onClientConnected();
 
         return true;
-
-        /*while (mClient.isConnected() && !mClient.isClosed()) {
-            try {
-                mClient.sendUrgentData(0xFF); // Heartbeat
-                Thread.sleep(2000);
-            } catch (Exception e) {
-                Log.e(TAG, "run: Connection with the client was lost. " + e);
-                break;
-            }
-        }
-
-        closeClientResources();
-        if (mCallback != null) mCallback.onClientDisconnected();*/
     }
 
-    private boolean createServer() {
+    private boolean createServer() throws InterruptedException {
+        Log.d(TAG, "createServer()");
         try {
-            mServer = new ServerSocket(SERVER_PORT);
+            mServer = new ServerSocket();
+            mServer.setReuseAddress(true);
+            mServer.bind(new InetSocketAddress(SERVER_PORT));
         } catch (Exception e) {
-            Log.e(TAG, "run(): new ServerSocket(SERVER_PORT)", e);
+            Log.e(TAG, "createServer(): new ServerSocket(SERVER_PORT)", e);
             return false;
         }
         return true;
     }
 
     private boolean waitingConnection() {
+        Log.d(TAG, "waitingConnection()");
         try {
-            mClient = mServer.accept(); // BLOCK THREAD
+            mClientSocket = mServer.accept(); // BLOCK THREAD
         } catch (Exception e) {
             Log.e(TAG, "run(): mServer.accept()", e);
             return false;
@@ -100,8 +93,9 @@ public class MySocketServer {
     }
 
     private boolean getOutputStream() {
+        Log.d(TAG, "getOutputStream()");
         try {
-            mOutputStream = mClient.getOutputStream();
+            mOutputStream = mClientSocket.getOutputStream();
         } catch (Exception e) {
             Log.e(TAG, "run(): mClient.getOutputStream()", e);
             return false;
@@ -110,35 +104,23 @@ public class MySocketServer {
     }
 
     public synchronized void sendResolution(int width, int height) {
-        if (!isClientConnected.get()) {
-            Log.w(TAG, "sendResolution: Попытка отправки разрешения, но клиент НЕ ПОДКЛЮЧЕН (isClientConnected=false).");
-            return;
-        }
-        if (mOutputStream == null) {
-            Log.e(TAG, "sendResolution: КРИТИЧЕСКАЯ ОШИБКА: outputStream is NULL для отправки разрешения, хотя клиент считается подключенным!");
-            // Не вызываем closeClientResources() здесь, чтобы не было рекурсии, если это вызвано из closeClientResources
+        Log.d(TAG, "sendResolution(): " + width + "x" + height);
+        if (!isClientConnected.get() || mOutputStream == null) {
             return;
         }
         try {
-            Log.d(TAG, "sendResolution: Отправка пакета ТИП 2: " + width + "x" + height);
             mOutputStream.write(2);
             mOutputStream.write(ByteBuffer.allocate(4).putInt(width).array());
             mOutputStream.write(ByteBuffer.allocate(4).putInt(height).array());
             mOutputStream.flush();
-            Log.d(TAG, "sendResolution: Пакет ТИП 2 успешно отправлен.");
         } catch (Exception e) {
-            Log.e(TAG, "sendResolution: НЕОЖИДАННАЯ Ошибка при отправке разрешения.", e);
+            Log.e(TAG, "sendResolution: Exception", e);
             closeClientResources();
         }
     }
 
     public synchronized void sendData(byte[] data, boolean isConfig) {
-        if (!isClientConnected.get()) {
-            // Log.w(TAG, "sendData: Попытка отправки данных, но клиент НЕ ПОДКЛЮЧЕН (isClientConnected=false).");
-            return; // Тихо выходим, если некуда слать (например, drainEncoder пытается слать, а клиент только что отвалился)
-        }
-        if (mOutputStream == null) {
-            Log.e(TAG, "sendData: КРИТИЧЕСКАЯ ОШИБКА: outputStream is NULL для отправки данных, хотя клиент считается подключенным!");
+        if (!isClientConnected.get() || mOutputStream == null) {
             return;
         }
         try {
@@ -149,35 +131,32 @@ public class MySocketServer {
             mOutputStream.write(data);
             mOutputStream.flush();
         } catch (Exception e) {
-            Log.e(TAG, " TcpServer.sendData: КРИТИЧЕСКАЯ ОШИБКА Throwable при отправке данных.", e);
+            Log.e(TAG, " TcpServer.sendData: Exception", e);
             closeClientResources();
         }
     }
 
     private synchronized void closeClientResources() {
+        Log.d(TAG, "closeClientResources()");
         if (mOutputStream != null) {
             try {
                 mOutputStream.close();
-                Log.d(TAG, "closeClientResources: outputStream закрыт.");
             } catch (Exception e) {
-                Log.e(TAG, "closeClientResources: Ошибка при закрытии outputStream.", e);
+                Log.e(TAG, "closeClientResources: Exception1.", e);
             } finally {
                 mOutputStream = null;
             }
         }
 
-        if (mClient != null) {
+        if (mClientSocket != null) {
             try {
-                if (!mClient.isClosed()) {
-                    mClient.close();
-                    Log.d(TAG, "closeClientResources: clientSocket закрыт.");
-                } else {
-                    Log.d(TAG, "closeClientResources: clientSocket уже был закрыт.");
+                if (!mClientSocket.isClosed()) {
+                    mClientSocket.close();
                 }
             } catch (Exception e) {
-                Log.e(TAG, "closeClientResources: Ошибка при закрытии clientSocket.", e);
+                Log.e(TAG, "closeClientResources: Exception2.", e);
             } finally {
-                mClient = null;
+                //mClient = null;
             }
         }
         isClientConnected.set(false);
@@ -185,17 +164,18 @@ public class MySocketServer {
     }
 
     public void stop(String reason) {
+        Log.d(TAG, "stop(): reason: " + reason);
         closeClientResources();
 
         if (mServer != null) {
             try {
                 mServer.close();
             } catch (Exception e) {
-                Log.e(TAG, "stop(): mServer.close()", e);
+                Log.e(TAG, "stop(): Exception.", e);
             }
         }
         isRunning.set(false);
-        if (mCallback != null) mCallback.onStoped(reason);
+        if (mCallback != null) mCallback.onStopped(reason);
     }
 
 }
