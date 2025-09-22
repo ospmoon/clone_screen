@@ -35,6 +35,7 @@ import androidx.core.content.ContextCompat;
 import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import osp.moon.clonescreen.App;
 import osp.moon.clonescreen.R;
 import osp.moon.clonescreen.customviews.BorderView;
 import osp.moon.clonescreen.helpers.AppHelper;
@@ -42,8 +43,6 @@ import osp.moon.clonescreen.helpers.AppHelper;
 public class MyCaptureService extends Service implements MySocketServer.ServerCallback {
 
     private final String TAG = MyCaptureService.class.getName();
-
-    public static final String ACTION_PREPARE = "osp.moon.clonescreen.ACTION_PREPARE";
     public static final String ACTION_START = "osp.moon.clonescreen.ACTION_START";
     public static final String ACTION_STOP = "osp.moon.clonescreen.ACTION_STOP";
     public static final String RESULT_CODE = "osp.moon.clonescreen.RESULT_CODE";
@@ -51,14 +50,9 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
 
     private static final int SERVICE_ID = 1;
     private static final String MIME_TYPE = MediaFormat.MIMETYPE_VIDEO_AVC;
-    private int mScreenWidth = 0;
-    private int mScreenHeight = 0;
-    private int mScreenDpi = 0;
     private static final int BIT_RATE = 6000000;
     private static final int FRAME_RATE = 30;
     private static final int I_FRAME_INTERVAL = 2;
-    private byte[] lastSps = null;
-    private byte[] lastPps = null;
     private MediaCodec mVideoEncoder;
     private VirtualDisplay mVirtualDisplay;
     private Surface mInputSurface;
@@ -66,7 +60,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
     private Handler mHandler;
     private MediaProjectionManager mProjectionManager;
     private MediaProjection mMediaProjection;
-    MediaProjection.Callback mMediaProjectionCallback;
+    private MediaProjection.Callback mMediaProjectionCallback;
     private Thread mWorkerThread;
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private MySocketServer mSocketServer;
@@ -109,6 +103,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
             Log.e(TAG, "КРИТИЧЕСКАЯ ОШИБКА при добавлении BorderView в WindowManager", e);
         }
 
+        mSocketServer = new MySocketServer(getApplicationContext(), MyCaptureService.this);
     }
 
     @Override
@@ -144,11 +139,9 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
                     mMediaProjection.registerCallback(mMediaProjectionCallback, mHandler);
                     isRunning.set(true);
 
-                    mSocketServer = new MySocketServer(getApplicationContext(), MyCaptureService.this);
-                    if (mSocketServer.createServer(AppHelper.getPort())) {
-                        startWaitingClientThread();
-                    }
+                    startCapture();
 
+                    mSocketServer.start();
                 } else  {
                     Log.e(TAG, "onStartCommand: mMediaProjection == null");
                     Toast.makeText(this, getString(R.string.failed_start_screen_capture_toast_message), Toast.LENGTH_LONG).show();
@@ -171,22 +164,6 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
         super.onDestroy();
         Log.w(TAG, "onDestroy()");
         hideBorderView();
-    }
-
-    private void startWaitingClientThread() {
-        Log.d(TAG, "startWaitingClientThread()");
-        Thread thread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    mSocketServer.startAndWaitClient();
-                } catch (Exception e) {
-                    Log.e(TAG, "startWaitingClientThread: Exception", e);
-                    Thread.currentThread().interrupt();
-                }
-            }
-        });
-        thread.start();
     }
 
     private void startCapture() {
@@ -220,19 +197,11 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
         if (error != null) {
             return error;
         }
-        if (mSocketServer != null) mSocketServer.sendResolution(mScreenWidth, mScreenHeight);
-
-        if (mVirtualDisplay != null) {
-            //return null;
-        }
+        //if (mSocketServer != null) mSocketServer.sendResolution();
 
         error = createInputSurface(createMediaFormat());
         if (error != null) {
             return error;
-        }
-
-        if (mVirtualDisplay != null) {
-            return null;
         }
 
         return createVirtualDisplay();
@@ -244,10 +213,10 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
             WindowManager wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
             DisplayMetrics metrics = new DisplayMetrics();
             wm.getDefaultDisplay().getRealMetrics(metrics);
-            mScreenWidth = metrics.widthPixels;
-            mScreenHeight = metrics.heightPixels;
-            mScreenDpi = metrics.densityDpi;
-            Log.i(TAG, "Screen Resolution: " + mScreenWidth + "x" + mScreenHeight);
+            AppHelper.setScreenWidth(metrics.widthPixels);
+            AppHelper.setScreenHeight(metrics.heightPixels);
+            AppHelper.setScreenDpi(metrics.densityDpi);
+            Log.i(TAG, "Screen Resolution: " + AppHelper.getScreenWidth() + "x" + AppHelper.getScreenHeight());
         } catch (Exception e) {
             Log.e(TAG, "getScreenResolution: Exception.", e);
             return e.getMessage();
@@ -259,7 +228,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
         Log.d(TAG, "createMediaFormat()");
         MediaFormat format = null;
         try {
-            format = MediaFormat.createVideoFormat(MIME_TYPE, mScreenWidth, mScreenHeight);
+            format = MediaFormat.createVideoFormat(MIME_TYPE, AppHelper.getScreenWidth(), AppHelper.getScreenHeight());
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
             format.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE);
             format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
@@ -293,7 +262,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
         Log.d(TAG, "createVirtualDisplay()");
         try {
             mVirtualDisplay = mMediaProjection.createVirtualDisplay("ScreenCapture",
-                    mScreenWidth, mScreenHeight, mScreenDpi,
+                    AppHelper.getScreenWidth(), AppHelper.getScreenHeight(), AppHelper.getScreenDpi(),
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                     mInputSurface, null, null);
             Log.i(TAG, "VirtualDisplay created.");
@@ -306,49 +275,40 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
 
     private void mainLoop() {
         Log.d(TAG, "mainLoop()");
-        //requestSyncFrame();
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
-        while (mSocketServer != null && mSocketServer.isClientConnected() && !Thread.currentThread().isInterrupted()) {
-            if (mVideoEncoder == null) {
-                Log.w(TAG, "mainLoop: mVideoEncoder == null. Exit");
-                break;
-            }
+        while (mVideoEncoder != null && !Thread.currentThread().isInterrupted()) {
             try {
                 int outputBufferIndex = mVideoEncoder.dequeueOutputBuffer(bufferInfo, 10000);
-                if (outputBufferIndex != -1) Log.i(TAG, "mainLoop: index: " + outputBufferIndex);
+                //if (outputBufferIndex != -1) Log.i(TAG, "mainLoop: index: " + outputBufferIndex);
                 if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     Log.i(TAG, "mainLoop: INFO_OUTPUT_FORMAT_CHANGED.");
                     MediaFormat newFormat = mVideoEncoder.getOutputFormat();
                     ByteBuffer spsBuffer = newFormat.getByteBuffer("csd-0");
-                    lastSps = null; lastPps = null;
+                    AppHelper.setSps(null);
+                    AppHelper.setPps(null);
                     if (spsBuffer != null) {
-                        lastSps = new byte[spsBuffer.remaining()];
-                        spsBuffer.get(lastSps);
+                        AppHelper.setSps(new byte[spsBuffer.remaining()]);
+                        spsBuffer.get(AppHelper.getSps());
                         spsBuffer.rewind();
                     }
                     ByteBuffer ppsBuffer = newFormat.getByteBuffer("csd-1");
                     if (ppsBuffer != null) {
-                        lastPps = new byte[ppsBuffer.remaining()];
-                        ppsBuffer.get(lastPps);
+                        AppHelper.setPps(new byte[ppsBuffer.remaining()]);
+                        ppsBuffer.get(AppHelper.getPps());
                         ppsBuffer.rewind();
                     }
 
-                    if (mSocketServer != null && mSocketServer.isClientConnected() && lastSps != null && lastPps != null) {
-                        mSocketServer.sendData(lastSps, true);
-                        mSocketServer.sendData(lastPps, true);
+                    if (mSocketServer != null) {
+                        mSocketServer.sendData(AppHelper.getSps(), true);
+                        mSocketServer.sendData(AppHelper.getPps(), true);
                     }
-
                 } else if (outputBufferIndex >= 0) {
                     ByteBuffer outputBuffer = mVideoEncoder.getOutputBuffer(outputBufferIndex);
-                    if (outputBuffer == null) {
-                        Log.e(TAG, "drainEncoder: videoEncoder.getOutputBuffer(" + outputBufferIndex + ") return null!");
-                    } else {
-                        if (bufferInfo.size > 0) {
-                            if (mSocketServer != null && mSocketServer.isClientConnected()) {
-                                byte[] data = new byte[bufferInfo.size];
-                                outputBuffer.get(data, bufferInfo.offset, bufferInfo.size);
-                                mSocketServer.sendData(data, (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0);
-                            }
+                    if (outputBuffer != null && bufferInfo.size > 0) {
+                        if (mSocketServer != null) {
+                            byte[] data = new byte[bufferInfo.size];
+                            outputBuffer.get(data, bufferInfo.offset, bufferInfo.size);
+                            mSocketServer.sendData(data, (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0);
                         }
                         mVideoEncoder.releaseOutputBuffer(outputBufferIndex, false);
                     }
@@ -448,45 +408,21 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
         });
     }
 
-    public void requestSyncFrame() {
-        Log.d(TAG, "requestSyncFrame()");
-        if (mVideoEncoder != null && isRunning.get()) {
-            try {
-                Bundle params = new Bundle();
-                params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, -2);
-                mVideoEncoder.setParameters(params);
-            } catch (Exception e) {
-                Log.e(TAG, "requestSyncFrame: Exception", e);
-            }
-        }
-    }
-
     @Override
-    public void onServerCreated() {
-        Log.d(TAG, "callback onServerCreated()");
-    }
-
-    @Override
-    public void onFailedCreateServer(String reason) {
-        Log.d(TAG, "callback onFailedCreateServer(), reason: " + reason);
-    }
-
-    @Override
-    public void onStopped() {
-        Log.d(TAG, "callback onStoped()");
-    }
-
-    @Override
-    public void onClientConnected() {
-        Log.d(TAG, "callback onClientConnected()");
+    public void onClientConnected(String ip) {
+        Log.d(TAG, "callback onClientConnected(): client IP: " + ip);
         showBorderView(Color.RED);
-        startCapture();
     }
 
     @Override
     public void onClientDisconnected(String reason) {
         Log.d(TAG, "callback onClientDisconnected(), reason: " + reason);
-        startWaitingClientThread();
+    }
+
+    @Override
+    public void onServerStopped(String reason) {
+        Log.d(TAG, "callback onServerStopped(), reason: " + reason);
+        stopCaptureAndSelf(reason);
     }
 
     @Override

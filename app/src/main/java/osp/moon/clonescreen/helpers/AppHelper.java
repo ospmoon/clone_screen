@@ -26,11 +26,47 @@ import osp.moon.clonescreen.services.MyCaptureService;
 public class AppHelper {
 
     private static final String TAG = AppHelper.class.getName();
-
-    private static final int SERVER_PORT = 5000;
-
+    private static int _screenWidth = -1;
+    private static int _screenHeight = -1;
+    private static int _screenDpi = -1;
+    private static byte[] _sps = null;
+    private static byte[] _pps = null;
+    public static void setScreenWidth(int width) {
+        _screenWidth = width;
+    }
+    public static void setScreenHeight(int height) {
+        _screenHeight = height;
+    }
+    public static void setScreenDpi(int dpi) {
+        _screenDpi = dpi;
+    }
+    public static void setSps(byte[] sps) {
+        _sps = sps;
+    }
+    public static void setPps(byte[] pps) {
+        _pps = pps;
+    }
+    public static int getScreenWidth() {
+        return _screenWidth;
+    }
+    public static int getScreenHeight() {
+        return _screenHeight;
+    }
+    public static int getScreenDpi() {
+        return _screenDpi;
+    }
+    public static byte[] getSps() {
+        return _sps;
+    }
+    public static byte[] getPps() {
+        return _pps;
+    }
+    private static int _port = 5000;
+    public static void setServerPort(int port) {
+        _port = port;
+    }
     public static int getPort() {
-        return SERVER_PORT;
+        return _port;
     }
 
     public static boolean checkDrawOverlayPermission(final Context context) {
