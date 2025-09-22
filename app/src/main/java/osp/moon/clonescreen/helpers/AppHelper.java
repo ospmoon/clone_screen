@@ -27,6 +27,12 @@ public class AppHelper {
 
     private static final String TAG = AppHelper.class.getName();
 
+    private static final int SERVER_PORT = 5000;
+
+    public static int getPort() {
+        return SERVER_PORT;
+    }
+
     public static boolean checkDrawOverlayPermission(final Context context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             return Settings.canDrawOverlays(context);

@@ -17,8 +17,7 @@ import osp.moon.clonescreen.R;
 public class MySocketServer {
 
     private final String TAG = MySocketServer.class.getName();
-    public static final int SERVER_PORT = 5000;
-    private ServerSocket mServer;
+    private ServerSocket mServerSocket;
     private Socket mClientSocket;
     private OutputStream mOutputStream;
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
@@ -26,10 +25,12 @@ public class MySocketServer {
     private final AtomicBoolean isClientConnected = new AtomicBoolean(false);
     private final ServerCallback mCallback;
     public interface ServerCallback {
-        void onStarted();
-        void onStopped(String reason);
+        void onServerCreated();
+        void onFailedCreateServer(String reason);
+        void onWaitingForClient();
         void onClientConnected();
-        void onClientDisconnected();
+        void onClientDisconnected(String reason);
+        void onStopped();
     }
 
     public boolean isClientConnected() {
@@ -42,51 +43,50 @@ public class MySocketServer {
         this.mCallback = callback;
     }
 
-    public boolean startAndWaitClient() throws InterruptedException {
-        Log.d(TAG, "startAndWaitClient()");
-        if (!createServer()) {
-            stop(mContext.get().getString(R.string.failed_create_server_error_message));
+    public boolean createServer(int port) {
+        Log.d(TAG, "createServer()");
+        try {
+            mServerSocket = new ServerSocket();
+            mServerSocket.setReuseAddress(true);
+            mServerSocket.bind(new InetSocketAddress(port));
+        } catch (Exception e) {
+            Log.e(TAG, "createServer(): new ServerSocket(SERVER_PORT)", e);
+            closeServer(mContext.get().getString(R.string.failed_create_server_error_message));
+            if (mCallback != null) mCallback.onFailedCreateServer(e.getMessage());
             return false;
+        }
+        if (mCallback != null) mCallback.onServerCreated();
+        return true;
+    }
+
+    public void startAndWaitClient() {
+        Log.d(TAG, "startAndWaitClient()");
+
+        if (mServerSocket == null || mServerSocket.isClosed()) {
+            Log.e(TAG, "startAndWaitClient(): mServerSocket == null || mServerSocket.isClosed()");
+            closeServer("mServerSocket == null || mServerSocket.isClosed()");
+            return;
         }
 
         isRunning.set(true);
-        if (mCallback != null) mCallback.onStarted();
+        if (mCallback != null) mCallback.onWaitingForClient();
 
-        if (!waitingConnection()) {
-            stop(mContext.get().getString(R.string.waiting_connection_error_message));
-            return false;
+        if (waitingForClient() && getOutputStream()) {
+            isClientConnected.set(true);
+            if (mCallback != null) mCallback.onClientConnected();
+        } else {
+            isRunning.set(false);
+            if (mCallback != null) mCallback.onStopped();
         }
-
-        if (!getOutputStream()) {
-            stop(mContext.get().getString(R.string.failed_create_server_error_message));
-            return false;
-        }
-
-        isClientConnected.set(true);
-        if (mCallback != null) mCallback.onClientConnected();
-
-        return true;
     }
 
-    private boolean createServer() throws InterruptedException {
-        Log.d(TAG, "createServer()");
+    private boolean waitingForClient() {
+        Log.d(TAG, "waitingForClient()");
         try {
-            mServer = new ServerSocket();
-            mServer.setReuseAddress(true);
-            mServer.bind(new InetSocketAddress(SERVER_PORT));
+            mClientSocket = mServerSocket.accept(); // BLOCK THREAD
         } catch (Exception e) {
-            Log.e(TAG, "createServer(): new ServerSocket(SERVER_PORT)", e);
-            return false;
-        }
-        return true;
-    }
-
-    private boolean waitingConnection() {
-        Log.d(TAG, "waitingConnection()");
-        try {
-            mClientSocket = mServer.accept(); // BLOCK THREAD
-        } catch (Exception e) {
-            Log.e(TAG, "run(): mServer.accept()", e);
+            Log.e(TAG, "waitingForClient(): mServer.accept()", e);
+            closeServer(mContext.get().getString(R.string.waiting_connection_error_message));
             return false;
         }
         return true;
@@ -97,7 +97,8 @@ public class MySocketServer {
         try {
             mOutputStream = mClientSocket.getOutputStream();
         } catch (Exception e) {
-            Log.e(TAG, "run(): mClient.getOutputStream()", e);
+            Log.e(TAG, "getOutputStream(): mClient.getOutputStream()", e);
+            closeClient(mContext.get().getString(R.string.failed_create_server_error_message));
             return false;
         }
         return true;
@@ -115,7 +116,9 @@ public class MySocketServer {
             mOutputStream.flush();
         } catch (Exception e) {
             Log.e(TAG, "sendResolution: Exception", e);
-            closeClientResources();
+            //closeClientResources("sendResolution(), " + e.getMessage());
+            isClientConnected.set(false);
+            if (mCallback != null) mCallback.onClientDisconnected(e.getMessage());
         }
     }
 
@@ -132,50 +135,60 @@ public class MySocketServer {
             mOutputStream.flush();
         } catch (Exception e) {
             Log.e(TAG, " TcpServer.sendData: Exception", e);
-            closeClientResources();
+            //closeClientResources("sendData(), " + e.getMessage());
+            isClientConnected.set(false);
+            if (mCallback != null) mCallback.onClientDisconnected(e.getMessage());
         }
     }
 
-    private synchronized void closeClientResources() {
+    private synchronized void closeClientResources(String reason) {
         Log.d(TAG, "closeClientResources()");
-        if (mOutputStream != null) {
-            try {
-                mOutputStream.close();
-            } catch (Exception e) {
-                Log.e(TAG, "closeClientResources: Exception1.", e);
-            } finally {
-                mOutputStream = null;
-            }
-        }
-
-        if (mClientSocket != null) {
-            try {
-                if (!mClientSocket.isClosed()) {
-                    mClientSocket.close();
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "closeClientResources: Exception2.", e);
-            } finally {
-                //mClient = null;
-            }
-        }
-        isClientConnected.set(false);
-        if (mCallback != null) mCallback.onClientDisconnected();
+        closeStream(reason);
+        closeClient(reason);
     }
 
     public void stop(String reason) {
         Log.d(TAG, "stop(): reason: " + reason);
-        closeClientResources();
+        closeClientResources(reason);
+        closeServer(reason);
+        isRunning.set(false);
+        if (mCallback != null) mCallback.onStopped();
+    }
 
-        if (mServer != null) {
+    private synchronized void closeServer(String reason) {
+        Log.d(TAG, "closeServer(), reason: " + reason);
+        if (mServerSocket != null && !mServerSocket.isClosed()) {
             try {
-                mServer.close();
-            } catch (Exception e) {
-                Log.e(TAG, "stop(): Exception.", e);
+                mServerSocket.close();
+            } catch (Exception e2) {
+                Log.e(TAG, "createServer(): mServerSocket.close()", e2);
             }
         }
-        isRunning.set(false);
-        if (mCallback != null) mCallback.onStopped(reason);
+        mServerSocket = null;
+    }
+
+    private synchronized void closeClient(String reason) {
+        Log.d(TAG, "closeClient(), reason: " + reason);
+        if (mClientSocket != null && !mClientSocket.isClosed()) {
+            try {
+                mClientSocket.close();
+            } catch (Exception e2) {
+                Log.e(TAG, "createServer(): mClientSocket.close()", e2);
+            }
+        }
+        mClientSocket = null;
+    }
+
+    private synchronized void closeStream(String reason) {
+        Log.d(TAG, "closeStream(), reason: " + reason);
+        if (mOutputStream != null) {
+            try {
+                mOutputStream.close();
+            } catch (Exception e2) {
+                Log.e(TAG, "closeStream(): mClientSocket.close()", e2);
+            }
+        }
+        mOutputStream = null;
     }
 
 }

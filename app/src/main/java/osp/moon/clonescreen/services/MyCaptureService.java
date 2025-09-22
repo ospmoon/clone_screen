@@ -67,7 +67,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
     private MediaProjection mMediaProjection;
     MediaProjection.Callback mMediaProjectionCallback;
     private Thread mWorkerThread;
-    //private final AtomicBoolean isRunning = new AtomicBoolean(false);
+    private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private MySocketServer mSocketServer;
 
 
@@ -107,7 +107,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
         } catch (Exception e) {
             Log.e(TAG, "КРИТИЧЕСКАЯ ОШИБКА при добавлении BorderView в WindowManager", e);
         }
-        mSocketServer = new MySocketServer(getApplicationContext(), this);
+
     }
 
     @Override
@@ -123,7 +123,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
                 int resultCode = intent.getIntExtra(RESULT_CODE, -999);
                 Intent resultData = intent.getParcelableExtra(RESULT_DATA);
                 if (resultCode != RESULT_OK || resultData == null) {
-                    stopCaptureAndSelf();
+                    stopCaptureAndSelf("resultCode != RESULT_OK || resultData == null");
                     break;
                 }
                 mMediaProjection = mProjectionManager.getMediaProjection(resultCode, resultData);
@@ -132,20 +132,25 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
                         @Override
                         public void onStop() {
                             Log.e(TAG, "!!! mMediaProjectionCallback.onStop() !!!");
-                            stopCaptureAndSelf();
+                            stopCaptureAndSelf("mMediaProjectionCallback.onStop()");
                         }
                     };
                     mMediaProjection.registerCallback(mMediaProjectionCallback, mHandler);
+                    isRunning.set(true);
 
-                    startWaitingClientThread();
+                    mSocketServer = new MySocketServer(getApplicationContext(), MyCaptureService.this);
+                    if (mSocketServer.createServer(AppHelper.getPort())) {
+                        startWaitingClientThread();
+                    }
+
                 } else  {
-                    Log.e(TAG, "onStartCommand: mMediaProjection != null");
+                    Log.e(TAG, "onStartCommand: mMediaProjection == null");
                     Toast.makeText(this, getString(R.string.failed_start_screen_capture_toast_message), Toast.LENGTH_LONG).show();
-                    stopCaptureAndSelf();
+                    stopCaptureAndSelf("onStartCommand: mMediaProjection == null");
                 }
                 break;
             case ACTION_STOP:
-                stopCaptureAndSelf();
+                stopCaptureAndSelf("ACTION_STOP");
                 break;
         }
         return START_NOT_STICKY;
@@ -159,7 +164,6 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
     public void onDestroy() {
         super.onDestroy();
         Log.d(TAG, "onDestroy()");
-        //stopCaptureAndSelf();
         hideBorderView();
     }
 
@@ -169,7 +173,10 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
             @Override
             public void run() {
                 try {
-                    if (mSocketServer != null) mSocketServer.startAndWaitClient();
+                    //Thread.sleep(5000);
+
+                    mSocketServer.startAndWaitClient();
+
                 } catch (Exception e) {
                     Log.e(TAG, "startWaitingClientThread: Exception", e);
                     Thread.currentThread().interrupt();
@@ -183,23 +190,23 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
         Log.i(TAG, "startCapture()");
         mWorkerThread = new Thread(() -> {
             try {
-                if (reconfigureEncoder()) {
-                    mainLoop();
+                String reconfigureEncoderError = reconfigureEncoder();
+                if (reconfigureEncoderError != null) {
+                    stopCaptureAndSelf(reconfigureEncoderError);
                 } else {
-                    stopCaptureAndSelf();
+                    mainLoop();
                 }
             } catch (Exception e) {
                 Log.e(TAG, "workerThread: Exception1", e);
                 Thread.currentThread().interrupt();
-            } finally {
-                stopCaptureAndSelf();
+                stopCaptureAndSelf(e.getMessage());
             }
         });
         mWorkerThread.setName("ScreenCaptureWorker");
         mWorkerThread.start();
     }
 
-    private boolean reconfigureEncoder() {
+    private String reconfigureEncoder() {
         Log.i(TAG, "reconfigureEncoder()");
         MediaFormat format;
         try {
@@ -220,7 +227,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL);
         } catch (Exception e) {
             Log.e(TAG, "reconfigureEncoder: Общая ошибка при создании MediaFormat.", e);
-            return false;
+            return e.getMessage();
         }
 
         try {
@@ -233,7 +240,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
             Log.e(TAG, "reconfigureEncoder: КРИТИЧЕСКАЯ ОШИБКА при создании/настройке кодека.", e);
             if (mVideoEncoder != null) { mVideoEncoder.release(); mVideoEncoder = null; }
             if (mInputSurface != null) { mInputSurface.release(); mInputSurface = null; }
-            return false;
+            return e.getMessage();
         }
 
         try {
@@ -241,14 +248,13 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
                         mScreenWidth, mScreenHeight, mScreenDpi,
                         DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                         mInputSurface, null, null);
-            Log.i(TAG, "reconfigureEncoder: VirtualDisplay создан.");
+            Log.i(TAG, "reconfigureEncoder: VirtualDisplay created.");
         } catch (Exception e) {
-            Log.e(TAG, "reconfigureEncoder: Общая ошибка при создании VirtualDisplay.", e);
-            stopCaptureAndSelf();
-            return false;
+            Log.e(TAG, "reconfigureEncoder: Exception VirtualDisplay.", e);
+            return e.getMessage();
         }
-        Log.i(TAG, "reconfigureEncoder: ЗАВЕРШЕНИЕ.");
-        return true;
+        Log.i(TAG, "reconfigureEncoder: END.");
+        return null;
     }
 
     private void mainLoop() {
@@ -307,22 +313,33 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
         Log.i(TAG, "mainLoop----> EXIT");
     }
 
-    private void stopCaptureAndSelf() {
-        Log.i(TAG, "stopCaptureAndSelf()");
+    private void stopCaptureAndSelf(String reason) {
+        Log.i(TAG, "stopCaptureAndSelf(), reason: " + reason);
 
+        stopWorkerThread(reason);
+
+        stopSocketServer(reason);
+
+        releaseEncoderAndProjection();
+
+        stopSelf();
+    }
+
+    private void stopWorkerThread(String reason) {
+        Log.i(TAG, "stopWorkerThread(), reason: " + reason);
         if (mWorkerThread != null) {
             mWorkerThread.interrupt();
             try { mWorkerThread.join(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             mWorkerThread = null;
         }
+    }
 
+    private void stopSocketServer(String reason) {
+        Log.i(TAG, "stopSocketServer(), reason: " + reason);
         if (mSocketServer != null) {
-            mSocketServer.stop("stopCaptureAndSelf()");
-            //mSocketServer = null;
+            mSocketServer.stop(reason);
+            mSocketServer = null;
         }
-
-        releaseEncoderAndProjection();
-        stopSelf();
     }
 
     private void releaseEncoderAndProjection() {
@@ -383,13 +400,17 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
     }
 
     @Override
-    public void onStarted() {
-        Log.d(TAG, "callback onStarted()");
-        showBorderView(Color.GREEN);
+    public void onServerCreated() {
+        Log.d(TAG, "callback onServerCreated()");
     }
 
     @Override
-    public void onStopped(String reason) {
+    public void onFailedCreateServer(String reason) {
+        Log.d(TAG, "callback onFailedCreateServer(), reason: " + reason);
+    }
+
+    @Override
+    public void onStopped() {
         Log.d(TAG, "callback onStoped()");
     }
 
@@ -401,10 +422,14 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
     }
 
     @Override
-    public void onClientDisconnected() {
-        Log.d(TAG, "callback onClientDisconnected()");
+    public void onClientDisconnected(String reason) {
+        Log.d(TAG, "callback onClientDisconnected(), reason: " + reason);
+        startWaitingClientThread();
+    }
+
+    @Override
+    public void onWaitingForClient() {
+        Log.d(TAG, "callback onWaitingForClient()");
         showBorderView(Color.GREEN);
-        //startWaitingClientThread();
-        stopSelf();
     }
 }
