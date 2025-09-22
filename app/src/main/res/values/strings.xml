@@ -14,6 +14,7 @@
     <string name="mMediaProjectionManager_not_initialized_toast_message">Error: MediaProjectionManager not initialized.</string>
     <string name="please_grant_overlay_permission_toast_message">Please grant permission to draw on top of other windows</string>
     <string name="failed_start_screen_capture_toast_message">Error: Failed to start screen capture</string>
+    <string name="service_already_launched_toast_message">The service is already launched.</string>
 
     <string name="client_title">Client</string>
     <string name="ip_server_hint">Server IP address</string>

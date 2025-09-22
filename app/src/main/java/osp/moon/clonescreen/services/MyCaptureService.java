@@ -19,6 +19,7 @@ import android.media.MediaFormat;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -120,6 +121,11 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
 
         switch (action) {
             case ACTION_START:
+                if (isRunning.get()) {
+                    Log.w(TAG, "The service is already launched. Exit");
+                    Toast.makeText(this, getString(R.string.service_already_launched_toast_message), Toast.LENGTH_LONG).show();
+                    return START_NOT_STICKY;
+                }
                 int resultCode = intent.getIntExtra(RESULT_CODE, -999);
                 Intent resultData = intent.getParcelableExtra(RESULT_DATA);
                 if (resultCode != RESULT_OK || resultData == null) {
@@ -185,6 +191,10 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
 
     private void startCapture() {
         Log.d(TAG, "startCapture()");
+        if (mWorkerThread != null && mWorkerThread.isAlive()) {
+            Log.w(TAG, "startCapture(): mWorkerThread is already launched.");
+            return;
+        }
         mWorkerThread = new Thread(() -> {
             try {
                 String reconfigureEncoderError = setupEncoderAndVirtualDisplay();
@@ -296,6 +306,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
 
     private void mainLoop() {
         Log.d(TAG, "mainLoop()");
+        //requestSyncFrame();
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
         while (mSocketServer != null && mSocketServer.isClientConnected() && !Thread.currentThread().isInterrupted()) {
             if (mVideoEncoder == null) {
@@ -304,7 +315,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
             }
             try {
                 int outputBufferIndex = mVideoEncoder.dequeueOutputBuffer(bufferInfo, 10000);
-                Log.i(TAG, "mainLoop: index: " + outputBufferIndex);
+                if (outputBufferIndex != -1) Log.i(TAG, "mainLoop: index: " + outputBufferIndex);
                 if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     Log.i(TAG, "mainLoop: INFO_OUTPUT_FORMAT_CHANGED.");
                     MediaFormat newFormat = mVideoEncoder.getOutputFormat();
@@ -435,6 +446,19 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
                 mBorderView.setVisibility(GONE);
             }
         });
+    }
+
+    public void requestSyncFrame() {
+        Log.d(TAG, "requestSyncFrame()");
+        if (mVideoEncoder != null && isRunning.get()) {
+            try {
+                Bundle params = new Bundle();
+                params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, -2);
+                mVideoEncoder.setParameters(params);
+            } catch (Exception e) {
+                Log.e(TAG, "requestSyncFrame: Exception", e);
+            }
+        }
     }
 
     @Override
