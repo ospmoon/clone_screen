@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:padding="50dp">
+
+    <TextView
+        android:id="@+id/title_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_centerHorizontal="true"
+        android:text="@string/enter_ip_toast_message" />
+
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/ip_layout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_below="@id/title_text"
+        android:layout_marginLeft="5dp"
+        android:layout_marginTop="20dp"
+        android:layout_marginRight="5dp"
+        android:layout_marginBottom="5dp"
+        android:hint="@string/ip_server_hint">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/ip_address_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="top"
+            android:inputType="numberDecimal"
+            android:lines="1"
+            tools:layout_editor_absoluteX="23dp"
+            tools:layout_editor_absoluteY="28dp" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/connect_button"
+        style="@style/Widget.Material3.Button.IconButton.Filled.Tonal"
+        android:layout_width="96dp"
+        android:layout_height="96dp"
+        android:layout_below="@id/ip_layout"
+        android:layout_centerHorizontal="true"
+        android:layout_marginTop="50dp"
+        android:insetLeft="0dp"
+        android:insetTop="0dp"
+        android:insetRight="0dp"
+        android:insetBottom="0dp"
+        android:text="@string/connect_button_title"
+        app:cornerRadius="60dp" />
+
+</RelativeLayout>

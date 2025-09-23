@@ -71,6 +71,15 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
         super.onCreate();
         Log.d(TAG, "onCreate()");
 
+        try {
+            init();
+        } catch (Exception e) {
+            Log.e(TAG, "onCreate: Exception.", e);
+        }
+    }
+
+    private void init() {
+        Log.d(TAG, "init()");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification notification = AppHelper.getNotification(getApplicationContext(), getApplicationContext().getString(R.string.app_name));
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -100,7 +109,7 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
         try {
             windowManager.addView(mBorderView, borderViewParams);
         } catch (Exception e) {
-            Log.e(TAG, "КРИТИЧЕСКАЯ ОШИБКА при добавлении BorderView в WindowManager", e);
+            Log.e(TAG, "WindowManager. Exception.", e);
         }
 
         mSocketServer = new MySocketServer(getApplicationContext(), MyCaptureService.this);
@@ -389,23 +398,23 @@ public class MyCaptureService extends Service implements MySocketServer.ServerCa
 
     private void showBorderView(int color) {
         Log.d(TAG, "showBorderView: color: " + color);
-        mHandler.post(new Runnable() {
-            @Override
-            public void run() {
-                mBorderView.setBorderColor(color);
-                mBorderView.setVisibility(VISIBLE);
-            }
-        });
+        if (mHandler != null) {
+            mHandler.post(() -> {
+                if (mBorderView != null) {
+                    mBorderView.setBorderColor(color);
+                    mBorderView.setVisibility(VISIBLE);
+                }
+            });
+        }
     }
 
     private void hideBorderView() {
         Log.d(TAG, "hideBorderView()");
-        mHandler.post(new Runnable() {
-            @Override
-            public void run() {
-                mBorderView.setVisibility(GONE);
-            }
-        });
+        if (mHandler != null) {
+            mHandler.post(() -> {
+                if (mBorderView != null) mBorderView.setVisibility(GONE);
+            });
+        }
     }
 
     @Override

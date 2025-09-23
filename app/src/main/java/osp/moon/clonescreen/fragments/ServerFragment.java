@@ -2,7 +2,11 @@ package osp.moon.clonescreen.fragments;
 
 import static android.app.Activity.RESULT_OK;
 
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.graphics.Color;
 import android.media.projection.MediaProjectionManager;
 import android.os.Bundle;
 import android.util.Log;
@@ -42,12 +46,11 @@ public class ServerFragment extends Fragment {
                 }
             });
 
-    final private ActivityResultLauncher<Intent> mOverlayPermissionLauncher = registerForActivityResult(
-            new ActivityResultContracts.StartActivityForResult(),
-            result -> {
-                Log.i(TAG, "onActivityResult?: " + result);
 
-            });
+    private boolean isServiceRunning = false;
+    private Button mStartButton;
+    private Button mStopButton;
+    private boolean mProjectionManagerNotAvailable = false;
 
     @Override
     public void onCreate(@Nullable Bundle savedInstanceState) {
@@ -57,6 +60,7 @@ public class ServerFragment extends Fragment {
         mMediaProjectionManager = ContextCompat.getSystemService(requireActivity(), MediaProjectionManager.class);
         if (mMediaProjectionManager == null) {
             Log.e(TAG, "MediaProjectionManager not available");
+            mProjectionManagerNotAvailable = true;
             Toast.makeText(requireActivity(), requireActivity().getString(R.string.service_not_available_message), Toast.LENGTH_LONG).show();
         }
     }
@@ -70,49 +74,45 @@ public class ServerFragment extends Fragment {
         TextView ipAddressTextView = root.findViewById(R.id.ip_address_text);
         ipAddressTextView.setText(AppHelper.getIpAddress(requireContext()));
 
-        Button startButton = root.findViewById(R.id.start_button);
-        startButton.setOnClickListener(v -> {
-            if (AppHelper.checkDrawOverlayPermission(requireActivity())) {
-                if (mMediaProjectionManager != null) {
-                    mMediaProjectionLauncher.launch(mMediaProjectionManager.createScreenCaptureIntent());
-                } else {
-                    Log.e(TAG, "mMediaProjectionManager is null, cannot launch screen capture intent.");
-                    Toast.makeText(requireActivity(), requireActivity().getString(R.string.mMediaProjectionManager_not_initialized_toast_message), Toast.LENGTH_SHORT).show();
-                    AppHelper.stopCaptureService(requireActivity());
-                }
-            } else {
-                requestDrawOverlayPermission();
-            }
-        });
+        initStartAndStopButton(root);
 
-        Button stopButton = root.findViewById(R.id.stop_button);
-        stopButton.setOnClickListener(v -> {
-            AppHelper.stopCaptureService(requireActivity());
-        });
         return root;
     }
 
-    private void requestDrawOverlayPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Toast.makeText(requireContext(), requireActivity().getString(R.string.please_grant_overlay_permission_toast_message), Toast.LENGTH_LONG).show();
-            Intent intent = new Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:"+ requireActivity().getPackageName())
-            );
-            mOverlayPermissionLauncher.launch(intent);
+    private void initStartAndStopButton(View root) {
+        mStartButton = root.findViewById(R.id.start_button);
+        if (mProjectionManagerNotAvailable) {
+            mStartButton.setText(R.string.service_not_available_message);
+            mStartButton.setEnabled(false);
+            return;
         }
+        mStartButton.setOnClickListener(view -> {
+            if (mMediaProjectionManager != null) {
+                mMediaProjectionLauncher.launch(mMediaProjectionManager.createScreenCaptureIntent());
+            } else {
+                Log.e(TAG, "mMediaProjectionManager is null, cannot launch screen capture intent.");
+                Toast.makeText(requireActivity(), requireActivity().getString(R.string.mMediaProjectionManager_not_initialized_toast_message), Toast.LENGTH_SHORT).show();
+                AppHelper.stopCaptureService(requireActivity());
+            }
+        });
+        mStopButton = root.findViewById(R.id.stop_button);
+        mStopButton.setOnClickListener(view -> AppHelper.stopCaptureService(requireActivity()));
     }
 
     @Override
     public void onPause() {
         super.onPause();
         Log.i(TAG, "onPause()");
+        try {
+            requireActivity().unregisterReceiver(mStatusReceiver);
+        } catch (Exception e) {}
     }
 
     @Override
     public void onResume() {
         super.onResume();
         Log.i(TAG, "onResume()");
+        ContextCompat.registerReceiver(requireActivity(), mStatusReceiver, new IntentFilter(AppHelper.INTENT_ACTION_SERVICE_STATUS), ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
     @Override
@@ -120,4 +120,18 @@ public class ServerFragment extends Fragment {
         super.onDestroy();
         Log.i(TAG, "onDestroy()");
     }
+
+    private final BroadcastReceiver mStatusReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(final Context context, Intent intent) {
+            if (intent == null) {
+                return;
+            }
+            String action = intent.getAction();
+            if (action != null && action.equals(AppHelper.INTENT_ACTION_SERVICE_STATUS)) {
+                isServiceRunning = intent.getBooleanExtra(AppHelper.IS_RUNNING_KEY, false);
+                Log.i(TAG, "Service is running?: " + isServiceRunning);
+            }
+        }
+    };
 }

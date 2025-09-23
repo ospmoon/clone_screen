@@ -2,4 +2,7 @@
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <color name="server_color">#4453BB</color>
+    <color name="client_color">#BBAC44</color>
+    <color name="gr_color">#44BB71</color>
 </resources>

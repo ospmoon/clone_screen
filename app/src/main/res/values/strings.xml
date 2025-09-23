@@ -1,7 +1,11 @@
 <resources>
     <string name="app_name">Clone Screen</string>
 
-    <string name="server_title">Server</string>
+    <string name="select_role_description">Please select a role</string>
+    <string name="master_device_description">If Master device, then clones this screen to the Slave</string>
+    <string name="slave_device_description">if slave device, then the Master screen will be cloned here</string>
+
+    <string name="server_title">Master device</string>
     <string name="start_button_title">Start screen cloning</string>
     <string name="stop_button_title">Stop</string>
     <string name="screen_cloning_has_begun_toast_message">Screen cloning has begun!</string>
@@ -16,9 +20,9 @@
     <string name="failed_start_screen_capture_toast_message">Error: Failed to start screen capture</string>
     <string name="service_already_launched_toast_message">The service is already launched.</string>
 
-    <string name="client_title">Client</string>
-    <string name="ip_server_hint">Server IP address</string>
-    <string name="enter_ip_toast_message">Enter the broadcast IP address</string>
+    <string name="client_title">Slave device</string>
+    <string name="ip_server_hint">Master IP address</string>
+    <string name="enter_ip_toast_message">Please enter the master IP address</string>
     <string name="connect_button_title">Connect</string>
     <string name="connected_toast_message">Connected!</string>
     <string name="reconnecting_toast_message">Reconnecting…</string>

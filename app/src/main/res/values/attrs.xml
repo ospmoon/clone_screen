@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <declare-styleable name="JaggedEdgeView">
+        <attr name="jaggedEdgeHeight" format="dimension" />
+        <attr name="numberOfTeeth" format="integer" />
+        <attr name="viewBackgroundColor" format="color" />
+        <attr name="flipShape" format="boolean" />
+    </declare-styleable>
+</resources>

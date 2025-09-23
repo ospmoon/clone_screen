@@ -26,6 +26,8 @@ import osp.moon.clonescreen.services.MyCaptureService;
 public class AppHelper {
 
     private static final String TAG = AppHelper.class.getName();
+    public static final String INTENT_ACTION_SERVICE_STATUS = "osp.moon.clonescreen.INTENT_ACTION_SERVICE_STATUS";
+    public static final String IS_RUNNING_KEY = "osp.moon.clonescreen.IS_RUNNING_KEY";
     private static int _screenWidth = -1;
     private static int _screenHeight = -1;
     private static int _screenDpi = -1;
@@ -67,6 +69,13 @@ public class AppHelper {
     }
     public static int getPort() {
         return _port;
+    }
+    private static String _serverIp = "192.168.1.136";
+    public static void saveServerIp(String ip) {
+        _serverIp = ip;
+    }
+    public static String getServerIp() {
+        return _serverIp;
     }
 
     public static boolean checkDrawOverlayPermission(final Context context) {

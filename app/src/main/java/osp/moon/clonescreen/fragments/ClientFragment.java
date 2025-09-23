@@ -9,13 +9,11 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.Button;
-import android.widget.EditText;
-import android.widget.LinearLayout;
 import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
+import androidx.navigation.Navigation;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -30,18 +28,12 @@ import osp.moon.clonescreen.helpers.AppHelper;
 public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
 
     private static final String TAG = ClientFragment.class.getName();
-
     private static final String MIME_TYPE = MediaFormat.MIMETYPE_VIDEO_AVC;
-
     private AutoFitSurfaceView surfaceView;
     private SurfaceHolder surfaceHolder;
     private MediaCodec videoDecoder;
     private Thread networkThread;
-    private EditText ipInput;
-    private LinearLayout controlsContainer;
-    private String masterIpAddress = "192.168.1.136";
-
-    private final AtomicBoolean shouldBeConnecting = new AtomicBoolean(false);
+    private final AtomicBoolean shouldBeConnecting = new AtomicBoolean(true);
 
     @Override
     public void onCreate(@Nullable Bundle savedInstanceState) {
@@ -54,42 +46,21 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
         Log.i(TAG, "onCreateView()");
         View root = inflater.inflate(R.layout.fragment_client, container, false);
-
-        ipInput = root.findViewById(R.id.ip_address_input);
-        ipInput.setText(masterIpAddress);
-
-        controlsContainer = root.findViewById(R.id.controls_container);
         surfaceView = root.findViewById(R.id.client_surface_view);
         surfaceView.getHolder().addCallback(this);
-
-        Button connectButton = root.findViewById(R.id.connect_button);
-        connectButton.setOnClickListener(v -> {
-            Log.d(TAG, "onClick: Нажата кнопка 'Подключиться'.");
-            masterIpAddress = ipInput.getText().toString();
-            if (masterIpAddress.isEmpty()) {
-                Toast.makeText(requireActivity(), requireActivity().getString(R.string.enter_ip_toast_message), Toast.LENGTH_SHORT).show();
-                return;
-            }
-            shouldBeConnecting.set(true);
-            controlsContainer.setVisibility(View.GONE);
-            startClient();
-        });
         return root;
     }
 
     @Override
     public void surfaceCreated(@NonNull SurfaceHolder holder) {
-        Log.d(TAG, "surfaceCreated: Surface создан и готов.");
-        this.surfaceHolder = holder; // Сохраняем holder
-        if (shouldBeConnecting.get()) {
-            Log.d(TAG, "surfaceCreated: Запускаем клиент, так как подключение уже было запрошено.");
-            startClient();
-        }
+        Log.d(TAG, "surfaceCreated()");
+        this.surfaceHolder = holder;
+        startClient();
     }
 
     @Override
     public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
-        Log.d(TAG, "surfaceDestroyed: Surface уничтожен. Останавливаем клиент.");
+        Log.d(TAG, "surfaceDestroyed()");
         this.surfaceHolder = null;
         stopClient();
     }
@@ -100,27 +71,24 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
     }
 
     private void startClient() {
-        Log.d(TAG, "startClient: Проверка условий для запуска.");
+        Log.d(TAG, "startClient()");
         if (this.surfaceHolder == null || this.surfaceHolder.getSurface() == null || !this.surfaceHolder.getSurface().isValid()) {
-            Log.w(TAG, "startClient: SurfaceHolder или Surface не готовы, запуск отложен.");
+            Log.w(TAG, "startClient: SurfaceHolder or Surface is not ready, launch postponed.");
             return;
         }
         if (networkThread != null && networkThread.isAlive()) {
-            Log.w(TAG, "startClient: Сетевой поток уже запущен, новый не создаем.");
+            Log.w(TAG, "startClient: The network stream is already running, we are not creating a new one.");
             return;
         }
-        Log.d(TAG, "startClient: Все условия выполнены, запускаем сетевой поток.");
 
         networkThread = new Thread(() -> {
             try {
-                Log.d(TAG, "networkThread: Поток запущен. Входим в цикл переподключения.");
                 while (shouldBeConnecting.get() && !Thread.currentThread().isInterrupted()) {
-                    try (Socket socket = new Socket(masterIpAddress, AppHelper.getPort())) {
-                        Log.i(TAG, "networkThread: УСПЕШНО ПОДКЛЮЧЕНО к " + masterIpAddress);
+                    try (Socket socket = new Socket(AppHelper.getServerIp(), AppHelper.getPort())) {
+                        Log.i(TAG, "networkThread: SUCCESSFULLY CONNECTED to" + AppHelper.getServerIp());
                         requireActivity().runOnUiThread(() -> Toast.makeText(requireActivity(), requireActivity().getString(R.string.connected_toast_message), Toast.LENGTH_SHORT).show());
 
                         try (InputStream inputStream = socket.getInputStream()) {
-                            Log.d(TAG, "networkThread: Начинаем цикл чтения данных из сокета.");
                             // Настраиваем декодер один раз с "заглушкой", реальный размер придет из потока.
                             setupDecoder(1, 1);
 
@@ -131,26 +99,25 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
                                 }
 
                                 if (packetType == 2) {
-                                    Log.i(TAG, "!!! networkThread: ПОЛУЧЕН ПАКЕТ ТИП 2 (Разрешение) !!!");
+                                    Log.i(TAG, "!!! networkThread: (Resolution packet) !!!");
                                     byte[] widthBytes = readNBytes(inputStream, 4);
                                     byte[] heightBytes = readNBytes(inputStream, 4);
                                     int receivedWidth = ByteBuffer.wrap(widthBytes).asIntBuffer().get();
                                     int receivedHeight = ByteBuffer.wrap(heightBytes).asIntBuffer().get();
-                                    Log.i(TAG, "networkThread: Новое разрешение от сервера: " + receivedWidth + "x" + receivedHeight);
+                                    Log.i(TAG, "networkThread: new Resolution: " + receivedWidth + "x" + receivedHeight);
 
                                     // Перенастраиваем декодер с новым разрешением
                                     setupDecoder(receivedWidth, receivedHeight);
 
                                 } else if (packetType == 0 || packetType == 1) {
                                     if (videoDecoder == null) {
-                                        Log.w(TAG, "networkThread: Получен пакет с видео, но декодер еще не готов. Пропускаем.");
                                         continue;
                                     }
                                     byte[] sizeBuffer = readNBytes(inputStream, 4);
                                     int packetSize = ByteBuffer.wrap(sizeBuffer).asIntBuffer().get();
 
                                     if (packetSize <= 0 || packetSize > 2_000_000)
-                                        throw new IOException("Неверный размер пакета: " + packetSize);
+                                        throw new IOException("Invalid packet size: " + packetSize);
 
                                     byte[] packetBuffer = readNBytes(inputStream, packetSize);
                                     feedDecoder(packetBuffer, packetType == 0);
@@ -158,41 +125,33 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
                             }
                         }
                     } catch (Exception e) {
-
-                            Log.e(TAG, "networkThread: Ошибка в цикле подключения: " + e.getMessage());
-                            Log.w(TAG, "networkThread: Пауза 2 секунды перед переподключением...");
+                            Log.e(TAG, "networkThread: Exception ", e);
+                            Log.w(TAG, "networkThread: 5 second pause before reconnecting...");
                             requireActivity().runOnUiThread(() -> Toast.makeText(requireActivity(), requireActivity().getString(R.string.reconnecting_toast_message), Toast.LENGTH_SHORT).show());
                             try {
-                                Thread.sleep(2000);
+                                Thread.sleep(5000);
                             } catch (InterruptedException interruptedException) {
-                                Log.w(TAG, "networkThread: Поток прерван во время паузы.");
                                 Thread.currentThread().interrupt();
                             }
-
                     }
                 }
-                Log.d(TAG, "networkThread: Вышли из основного цикла. Поток завершается.");
-                requireActivity().runOnUiThread(() -> {
-                    Log.d(TAG, "UI Thread: Показываем панель управления.");
-                    controlsContainer.setVisibility(View.VISIBLE);
-                });
-            } catch (Throwable t) { // Ловим ВСЕ, включая нативные ошибки, которые могут не быть Exception
-                Log.e(TAG, "networkThread: НЕОБРАБОТАННАЯ ОШИБКА Throwable в сетевом потоке!", t);
+                Log.d(TAG, "networkThread: Exited the main loop. Thread terminates.");
+            } catch (Exception e) {
+                Log.e(TAG, "networkThread: Exception", e);
             } finally {
-                Log.d(TAG, "networkThread: Вышли из основного цикла или поймали Throwable. Поток завершается.");
                 if (isAdded() && getActivity() != null) { // Проверяем, что фрагмент присоединен
                     getActivity().runOnUiThread(() -> {
-                        Log.d(TAG, "UI Thread: Показываем панель управления из finally сетевого потока.");
-                        if (controlsContainer != null) {
-                            controlsContainer.setVisibility(View.VISIBLE);
-                        }
+                        requireActivity().runOnUiThread(this::openWelcomeFragment);
                     });
-                } else {
-                    Log.w(TAG, "networkThread: Фрагмент не присоединен, UI не обновляем из finally.");
                 }
             }
         });
         networkThread.start();
+    }
+
+    private void openWelcomeFragment() {
+        Log.w(TAG, "openWelcomeFragment()");
+        Navigation.findNavController(requireActivity(), R.id.nav_host_fragment).navigate(R.id.welcomeFragment);
     }
 
     private byte[] readNBytes(InputStream in, int n) throws IOException {
@@ -200,50 +159,46 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
         int totalRead = 0;
         while(totalRead < n) {
             int bytesRead = in.read(buffer, totalRead, n - totalRead);
-            if (bytesRead == -1) throw new IOException("Соединение закрыто во время чтения " + n + " байт.");
+            if (bytesRead == -1) throw new IOException("The connection was closed while reading " + n + " bytes.");
             totalRead += bytesRead;
         }
         return buffer;
     }
 
     private void setupDecoder(int width, int height) {
-        Log.d(TAG, "setupDecoder: Начало настройки/перенастройки декодера.");
+        Log.d(TAG, "setupDecoder()");
         Surface currentSurface = null;
         if (this.surfaceHolder != null) {
             currentSurface = this.surfaceHolder.getSurface();
         }
 
         if (currentSurface == null || !currentSurface.isValid()) {
-            Log.e(TAG, "setupDecoder: Surface не доступен или не валиден! Невозможно настроить декодер.");
-            // Если декодер уже был, его надо остановить и освободить
             if (videoDecoder != null) {
                 try {
                     videoDecoder.stop();
                     videoDecoder.release();
                 } catch (Exception e) {
-                    Log.w(TAG, "setupDecoder: Ошибка при освобождении старого декодера из-за невалидного surface.", e);
+                    Log.w(TAG, "setupDecoder: Exception1.", e);
                 }
                 videoDecoder = null;
             }
-            return; // Выходим, если нет валидного surface
+            return;
         }
 
         try {
             if (videoDecoder != null) {
-                Log.d(TAG, "setupDecoder: Освобождаем старый декодер.");
                 videoDecoder.stop();
                 videoDecoder.release();
-                videoDecoder = null; // Явно обнуляем перед пересозданием
+                videoDecoder = null;
             }
-            Log.i(TAG, "setupDecoder: Настройка с разрешением: " + width + "x" + height + " на surface: " + currentSurface);
+            Log.i(TAG, "setupDecoder: Setting up with permission: " + width + "x" + height + " on surface: " + currentSurface);
             MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, width, height);
             videoDecoder = MediaCodec.createDecoderByType(MIME_TYPE);
-            videoDecoder.configure(format, currentSurface, null, 0); // Используем currentSurface
+            videoDecoder.configure(format, currentSurface, null, 0);
             videoDecoder.start();
-            Log.i(TAG, "setupDecoder: Декодер успешно настроен и запущен.");
         } catch (Exception e) {
-            Log.e(TAG, "setupDecoder: КРИТИЧЕСКАЯ ОШИБКА при настройке декодера.", e);
-            if (videoDecoder != null) { // Попытка очистки, если что-то пошло не так
+            Log.e(TAG, "setupDecoder: Exception2.", e);
+            if (videoDecoder != null) {
                 try { videoDecoder.release(); } catch (Exception e2) { /* ignore */ }
                 videoDecoder = null;
             }
@@ -253,15 +208,13 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
 
     private void feedDecoder(byte[] data, boolean isConfig) {
         if (!shouldBeConnecting.get() || videoDecoder == null) {
-            Log.w(TAG, "feedDecoder: Попытка работы с декодером, когда клиент остановлен или декодер null. Выход.");
             return;
         }
         try {
             if (!shouldBeConnecting.get()) return;
             int inputBufferIndex = videoDecoder.dequeueInputBuffer(10000);
             if (inputBufferIndex >= 0) {
-                if (!shouldBeConnecting.get() || videoDecoder == null) { // videoDecoder может стать null если stopClient сработал
-                    Log.w(TAG, "feedDecoder: Декодер остановлен во время получения inputBufferIndex. Выход.");
+                if (!shouldBeConnecting.get() || videoDecoder == null) {
                     return;
                 }
                 ByteBuffer inputBuffer = videoDecoder.getInputBuffer(inputBufferIndex);
@@ -269,18 +222,11 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
                     inputBuffer.clear();
                     inputBuffer.put(data);
                     int flags = isConfig ? MediaCodec.BUFFER_FLAG_CODEC_CONFIG : 0;
-                    if (!shouldBeConnecting.get() || videoDecoder == null) {
-                        Log.w(TAG, "feedDecoder: Декодер остановлен перед queueInputBuffer. Выход.");
-                        // Возможно, стоит попытаться вернуть буфер, если он был взят
-                        // videoDecoder.queueInputBuffer(inputBufferIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM); // Пример
-                        return;
-                    }
                     videoDecoder.queueInputBuffer(inputBufferIndex, 0, data.length, System.nanoTime() / 1000, flags);
                 }
             }
 
             if (!shouldBeConnecting.get() || videoDecoder == null) {
-                Log.w(TAG, "feedDecoder: Декодер остановлен перед dequeueOutputBuffer. Выход.");
                 return;
             }
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
@@ -294,59 +240,49 @@ public class ClientFragment extends Fragment implements SurfaceHolder.Callback {
             }
 
             if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                Log.i(TAG, "!!! feedDecoder: Формат декодера изменился: " + videoDecoder.getOutputFormat());
+                Log.i(TAG, "INFO_OUTPUT_FORMAT_CHANGED: " + videoDecoder.getOutputFormat());
                 MediaFormat newFormat = videoDecoder.getOutputFormat();
                 int newWidth = newFormat.getInteger(MediaFormat.KEY_WIDTH);
                 int newHeight = newFormat.getInteger(MediaFormat.KEY_HEIGHT);
-                Log.d(TAG, "feedDecoder: Новые размеры от декодера: " + newWidth + "x" + newHeight);
+                Log.d(TAG, "New sizes from the decoder: " + newWidth + "x" + newHeight);
 
-                // Теперь, когда мы доверяем данным от декодера, мы используем ИХ для установки AspectRatio
                 requireActivity().runOnUiThread(() -> {
-                    Log.d(TAG, "UI Thread: Устанавливаем пропорции " + newWidth + "x" + newHeight + " из данных декодера.");
                     surfaceView.setAspectRatio(newWidth, newHeight);
                 });
             }
         } catch (Exception e) {
-            if (shouldBeConnecting.get()) {
-                Log.e(TAG, "feedDecoder: Общая ошибка при работе с декодером.", e);
-            } else {
-                Log.w(TAG, "feedDecoder: Перехвачена общая ошибка во время остановки клиента.", e);
-            }
+            Log.w(TAG, "feedDecoder: Exception.", e);
         }
     }
 
     private void stopClient() {
-        Log.d(TAG, "stopClient: Начало остановки клиента.");
+        Log.d(TAG, "stopClient()");
         shouldBeConnecting.set(false);
         if (networkThread != null) {
-            Log.d(TAG, "stopClient: Прерываем сетевой поток.");
-            networkThread.interrupt(); // Прерываем поток
+            networkThread.interrupt();
             try {
-                networkThread.join(500); // Даем потоку немного времени на завершение
-                Log.d(TAG, "stopClient: NetworkThread joined or timed out.");
+                networkThread.join(500); // Let's give the Thread some time to complete.
             } catch (Exception e) {
-                Log.w(TAG, "stopClient: Прерывание во время ожидания завершения networkThread.");
-                Thread.currentThread().interrupt(); // Восстанавливаем флаг прерывания
+                Log.e(TAG, "stopClient: Exception1.", e);
+                Thread.currentThread().interrupt();
             }
             networkThread = null;
         }
         if (videoDecoder != null) {
-            Log.d(TAG, "stopClient: Освобождаем декодер.");
             try {
                 videoDecoder.stop();
                 videoDecoder.release();
             } catch (Exception e) {
-                Log.e(TAG, "stopClient: Ошибка при остановке декодера.", e);
+                Log.e(TAG, "stopClient: Exception2.", e);
             }
             videoDecoder = null;
         }
-        Log.d(TAG, "stopClient: Остановка клиента завершена.");
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-        Log.d(TAG, "onDestroy: Активити уничтожается.");
+        Log.d(TAG, "onDestroy()");
         stopClient();
     }
 
